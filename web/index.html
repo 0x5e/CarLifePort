@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#111310" />
+    <meta name="description" content="把 CarLife 投到任意一块屏幕上。CarLifePort 车机端。" />
+    <title>CarLifePort · CarLife 车机端</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='14' fill='%23d4f68a'/%3E%3Cpath d='M33 17a11 11 0 1 0 0 14' stroke='%23111310' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <symbol id="i-screen" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="3"/><path d="M8 21h8m-4-4v4"/></symbol>
+      <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h7m4 0h5M4 17h3m4 0h9"/><circle cx="13" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+      <symbol id="i-audio" viewBox="0 0 24 24"><path d="M4 9H2v6h2l6 4V5L4 9Zm10-1a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></symbol>
+      <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9H2v6h2l6 4V5L4 9Zm11 0 6 6m0-6-6 6"/></symbol>
+      <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 15h10"/></symbol>
+      <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1V10Z"/></symbol>
+      <symbol id="i-back" viewBox="0 0 24 24"><path d="m10 5-7 7 7 7m-7-7h18"/></symbol>
+      <symbol id="i-select" viewBox="0 0 24 24"><path d="M20 5v9a3 3 0 0 1-3 3H4m5-5-5 5 5 5"/></symbol>
+      <symbol id="i-prev" viewBox="0 0 24 24"><path d="M5 5v14m14-14L8 12l11 7V5Z"/></symbol>
+      <symbol id="i-next" viewBox="0 0 24 24"><path d="M19 5v14M5 5l11 7-11 7V5Z"/></symbol>
+      <symbol id="i-media" viewBox="0 0 24 24"><path d="m5 5 10 7-10 7V5Z"/><path d="M17 5v14"/></symbol>
+      <symbol id="i-phone" viewBox="0 0 24 24"><path d="m8 3 2 5-3 2a14 14 0 0 0 7 7l2-3 5 2v4a1 1 0 0 1-1 1A18 18 0 0 1 3 4a1 1 0 0 1 1-1h4Z"/></symbol>
+      <symbol id="i-navi" viewBox="0 0 24 24"><path d="M3 11 21 3l-8 18-2-8-8-2Z"/></symbol>
+      <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 14 6-6 6 6"/></symbol>
+      <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 10 6 6 6-6"/></symbol>
+      <symbol id="i-left" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></symbol>
+      <symbol id="i-right" viewBox="0 0 24 24"><path d="m10 6 6 6-6 6"/></symbol>
+      <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol>
+      <symbol id="i-focus" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><rect x="8" y="8" width="8" height="8" rx="2"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5m-4-5a8 8 0 0 1 13-2l2 2M4 17l2 2a8 8 0 0 0 13-2"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+      <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0m-11 4a6 6 0 0 1 8 0"/><circle cx="12" cy="20" r=".5"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+    </svg>
+    <div id="app" data-session="idle">
+      <header id="header">
+        <a class="brand" href="./" aria-label="CarLifePort 车机端"><span class="brand-mark" aria-hidden="true">C<span></span></span><span>CarLifePort<span class="brand-subtitle">CARLIFE ON ANY SCREEN</span></span></a>
+        <div class="header-right">
+          <div id="status" role="status"><span id="status-dot" data-state="idle"></span><span id="status-text">连接中…</span></div>
+          <button id="btn-focus" class="quiet-button" aria-pressed="false" title="隐藏界面元素，专注看画面"><svg class="icon"><use href="#i-focus"/></svg><span>专注模式</span></button>
+          <button id="btn-fullscreen" class="icon-button" aria-label="进入全屏" title="全屏"><svg class="icon"><use href="#i-expand"/></svg></button>
+        </div>
+      </header>
+      <div class="app-body">
+        <nav class="rail" aria-label="工具">
+          <div class="rail-top">
+            <button id="btn-viewer" class="rail-button active" aria-current="page" title="画面"><svg class="icon"><use href="#i-screen"/></svg><span>画面</span></button>
+            <button id="btn-display" class="rail-button" aria-haspopup="dialog" aria-controls="display-panel" title="画面设置"><svg class="icon"><use href="#i-sliders"/></svg><span>画面</span></button>
+            <button id="btn-audio" class="rail-button" aria-haspopup="dialog" aria-controls="audio-panel" title="音量"><svg class="icon"><use href="#i-audio"/></svg><span>音量</span></button>
+          </div>
+          <div class="rail-bottom">
+            <button id="btn-help" class="rail-button" aria-haspopup="dialog" aria-controls="help-panel" title="连接指南与快捷键"><svg class="icon"><use href="#i-keyboard"/></svg><span>指南</span></button>
+          </div>
+        </nav>
+        <main class="workspace">
+          <div class="workspace-heading"><div><p class="eyebrow">YOUR PHONE. A BIGGER PICTURE.</p><h1>CarLife 车机端<span class="heading-dot">.</span></h1></div><div class="connection-note"><svg class="icon"><use href="#i-wifi"/></svg><span>USB 有线连接。<br/><strong>用数据线把手机接上。</strong></span></div></div>
+          <section class="viewer" aria-label="CarLife 画面">
+            <div class="viewer-bar"><div class="viewer-label"><span id="viewer-indicator"></span><span id="viewer-state">STANDBY</span><span class="viewer-divider"></span><span id="device-name">尚未连接</span></div><div class="viewer-tools"><span class="touch-label">触摸与控制条</span><button id="btn-foreground" class="icon-button small" data-remote aria-label="把手机切到前台" title="把手机切到前台" disabled><svg class="icon"><use href="#i-refresh"/></svg></button></div></div>
+            <div id="screen-container">
+              <div id="surface"><canvas id="screen" width="1280" height="720" tabindex="0" aria-label="CarLife 实时画面，可用触摸或键盘操作手机" inert></canvas></div>
+              <div id="overlay">
+                <div class="connection-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="phone-outline"><span></span><svg class="icon"><use href="#i-wifi"/></svg></div><span class="orbit-spark"></span></div>
+                <p class="eyebrow" id="overlay-eyebrow">READY WHEN YOU ARE</p><h2 id="overlay-title">用数据线接上手机。</h2>
+                <p id="overlay-text" role="status">连接手机并打开 CarLife，画面会自动出现在这里。</p>
+                <button id="btn-setup" class="primary-button">连接指南<svg class="icon"><use href="#i-arrow"/></svg></button>
+                <div class="setup-note"><span>01 <b>接上数据线</b></span><span class="setup-line"></span><span>02 <b>打开手机上的 CarLife</b></span></div>
+              </div>
+            </div>
+            <div class="viewer-footer"><span id="stream-info">等待视频流</span><span class="stream-caption">CARLIFE / LIVE VIEW</span></div>
+          </section>
+          <div id="toolbar" class="control-dock" role="group" aria-label="车机控制">
+            <div class="control-group navigation-controls">
+              <button id="btn-back" class="control-button" data-remote title="返回" disabled><svg class="icon"><use href="#i-back"/></svg><span>返回</span></button>
+              <button id="btn-up" class="icon-button" data-remote aria-label="上" title="上" disabled><svg class="icon"><use href="#i-up"/></svg></button>
+              <button id="btn-down" class="icon-button" data-remote aria-label="下" title="下" disabled><svg class="icon"><use href="#i-down"/></svg></button>
+              <button id="btn-left" class="icon-button" data-remote aria-label="左" title="左" disabled><svg class="icon"><use href="#i-left"/></svg></button>
+              <button id="btn-right" class="icon-button" data-remote aria-label="右" title="右" disabled><svg class="icon"><use href="#i-right"/></svg></button>
+              <button id="btn-ok" class="control-button" data-remote title="确定" disabled><svg class="icon"><use href="#i-select"/></svg><span>确定</span></button>
+              <button id="btn-home" class="control-button" data-remote title="主界面" disabled><svg class="icon"><use href="#i-home"/></svg><span>主页</span></button>
+            </div>
+            <div class="control-group media-controls" role="group" aria-label="媒体">
+              <button id="btn-prev" class="icon-button" data-remote aria-label="上一首" title="上一首" disabled><svg class="icon"><use href="#i-prev"/></svg></button>
+              <button id="btn-media" class="play-button" data-remote aria-label="媒体" title="媒体" disabled><svg class="icon"><use href="#i-media"/></svg></button>
+              <button id="btn-next" class="icon-button" data-remote aria-label="下一首" title="下一首" disabled><svg class="icon"><use href="#i-next"/></svg></button>
+            </div>
+            <div class="control-group voice-controls">
+              <button id="btn-navi" class="control-button" data-remote title="导航" disabled><svg class="icon"><use href="#i-navi"/></svg><span>导航</span></button>
+              <button id="btn-tel" class="control-button" data-remote title="电话" disabled><svg class="icon"><use href="#i-phone"/></svg><span>电话</span></button>
+            </div>
+          </div>
+          <footer class="workspace-footer"><span class="keyboard-hint"><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd><span>方向</span><span class="footer-dot">·</span><kbd>↵</kbd><span>确定</span><span class="footer-dot">·</span><kbd>Esc</kbd><span>返回</span></span><div class="quick-volume"><button id="btn-mute" class="icon-button small" aria-label="静音" aria-pressed="false" title="静音"><svg class="icon"><use id="mute-icon" href="#i-audio"/></svg></button><input id="volume-quick" type="range" min="0" max="100" value="100" aria-label="主音量"/><output id="volume-value" for="volume-quick">100%</output><span id="audio-unlock-hint">点一下开启声音</span></div></footer>
+        </main>
+      </div>
+      <button id="btn-exit-focus" class="quiet-button" hidden><svg class="icon"><use href="#i-focus"/></svg>退出专注</button>
+      <div id="error-banner" class="hidden" role="alert"><span id="error-text"></span><button id="btn-error-close" class="icon-button small" aria-label="关闭提示"><svg class="icon"><use href="#i-close"/></svg></button></div>
+      <div id="toast" role="status" hidden></div>
+    </div>
+    <dialog id="audio-panel" class="drawer" aria-labelledby="audio-title">
+      <div class="panel-heading"><div><p class="eyebrow">MAKE IT SOUND LIKE YOU</p><h2 id="audio-title">音量</h2></div><button id="btn-audio-close" class="icon-button" aria-label="关闭音量面板"><svg class="icon"><use href="#i-close"/></svg></button></div>
+      <p class="panel-intro">音乐、导航播报，各调各的。</p>
+      <section class="panel-section"><div class="section-heading"><h3>主音量</h3><output id="audio-master-value" for="audio-master">100%</output></div><div class="master-slider"><svg class="icon"><use href="#i-audio"/></svg><input id="audio-master" type="range" min="0" max="100" value="100" aria-label="主音量"/></div><p class="panel-hint">音量保存在当前浏览器里。</p></section>
+      <section class="panel-section"><div class="section-heading"><h3>分路音量</h3><span class="section-tag">LIVE</span></div><div id="audio-streams"></div><p id="audio-status" class="empty-streams">手机上开始播放音乐或导航播报后，这里会出现对应的音量调节。</p></section>
+    </dialog>
+    <dialog id="display-panel" class="drawer" aria-labelledby="display-title">
+      <div class="panel-heading"><div><p class="eyebrow">A SCREEN THAT FITS</p><h2 id="display-title">画面设置</h2></div><button id="btn-display-close" class="icon-button" aria-label="关闭画面设置"><svg class="icon"><use href="#i-close"/></svg></button></div>
+      <p class="panel-intro">告诉手机按什么尺寸编码画面。</p>
+      <form id="display-form"><fieldset id="display-fields">
+        <section class="panel-section"><div class="section-heading"><h3>分辨率</h3><span class="section-tag">01</span></div><div id="display-presets" class="preset-grid"></div><div class="dimension-fields"><label for="display-width">宽 <span>px</span><input id="display-width" type="number" min="320" max="3840" step="2" placeholder="1280" required/></label><span class="dimension-times">×</span><label for="display-height">高 <span>px</span><input id="display-height" type="number" min="240" max="2160" step="2" placeholder="720" required/></label></div></section>
+        <section class="panel-section"><div class="section-heading"><h3>帧率</h3><span class="section-tag">02</span></div><div class="field"><label for="display-fps">帧率</label><select id="display-fps"><option value="30">30 fps · 省带宽</option><option value="60">60 fps · 更流畅</option></select></div></section>
+      </fieldset><div class="apply-area"><p class="restart-note"><svg class="icon"><use href="#i-refresh"/></svg>应用会重启视频编码，画面在几秒后恢复。</p><button id="btn-display-apply" class="primary-button" type="submit">应用画面设置<svg class="icon"><use href="#i-arrow"/></svg></button><p id="display-status" class="panel-hint" role="status"></p></div></form>
+    </dialog>
+    <dialog id="help-panel" class="guide-dialog" aria-labelledby="help-title">
+      <div class="panel-heading"><div><p class="eyebrow">A FEW THINGS TO KNOW</p><h2 id="help-title">怎么连上。</h2></div><button id="btn-help-close" class="icon-button" aria-label="关闭指南"><svg class="icon"><use href="#i-close"/></svg></button></div>
+      <section class="panel-section"><h3>把手机接上</h3><ol class="connection-steps"><li><span>01</span><div><strong>启动桥接与宿主进程</strong><p>依次运行 <b>carlife-usb-bridge</b> 和 <b>carlife-host</b>，本服务会自动接入。</p></div></li><li><span>02</span><div><strong>用数据线连接手机</strong><p>需要一根能传数据的线。连接后手机可能弹出「允许访问设备数据」，选择允许。</p></div></li><li><span>03</span><div><strong>在手机上打开 CarLife</strong><p>打开 App 并确认连接，画面会自动出现在这里。</p></div></li></ol></section>
+      <section class="panel-section"><h3>用键盘操作</h3><div class="shortcut-grid"><div><span>方向</span><span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></span></div><div><span>确定</span><kbd>Enter</kbd></div><div><span>返回</span><kbd>Esc</kbd></div><div><span>主界面</span><kbd>Home</kbd></div><div><span>上一首</span><kbd>MediaPrev</kbd></div><div><span>下一首</span><kbd>MediaNext</kbd></div></div><p class="panel-hint">也可以直接在画面上点击拖动，等同于触摸手机屏幕。</p></section>
+    </dialog>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
