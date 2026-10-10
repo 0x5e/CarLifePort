@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Agent 工作数据（本地记忆、缓存）
+.workbuddy/
+
+# 构建产物
+tools/aoa-probe/aoa-probe
+tools/aoa-probe/*.o
+tools/aoa-probe/*.dSYM/
