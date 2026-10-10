@@ -58,8 +58,10 @@ cd web && npm install && npm run build # → web/dist
 按顺序启动四个进程：
 
 ```sh
-# 1. 手机用数据线接上 Mac，先停掉 adb server（否则 AOA 握手时设备被 adb 占用）
-adb kill-server
+# 1. 手机用数据线接上 Mac，先做两件清理
+#    退出桌面版微信：它会自动对 Android 手机做 AOA 握手并独占整个 USB 设备，
+#    此时 libusb claim 报 LIBUSB_ERROR_ACCESS，adb kill-server 不起作用。
+adb kill-server                         # 停掉 adb server，否则 AOA 握手时设备被 adb 占用
 adb shell svc usb setFunctions          # 清掉可能残留的 accessory 模式
 
 # 2. USB 桥接
@@ -75,6 +77,10 @@ adb shell svc usb setFunctions          # 清掉可能残留的 accessory 模式
 ```
 
 手机端打开 CarLife App 并确认连接，画面会自动出现。
+
+启动顺序有依赖：`carlife-host` 会先等 `127.0.0.1:7200` 可连接，再调用
+`connectionSetup()`。在没有 `carlife-usb-bridge` 的情况下它停在等待阶段，
+不会监听自己的 socket，也不会发出任何状态帧。
 
 ### 常用参数
 
@@ -92,4 +98,4 @@ carlifed --addr 127.0.0.1:8080 \
 - 只实现有线（AOA）通路，无线 CarLife 未实现。
 - 触摸是单点，CarLife 协议本身不支持多指。
 - 视频只有 H.264；音频按 16 位 PCM 处理。
-- `carlife-host` 在 `connectionSetup()` 失败后不会自动重试，需重启进程。
+- `carlife-host` 对 `connectionSetup()` 最多重试 3 次；仍失败需重启进程。
