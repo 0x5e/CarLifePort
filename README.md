@@ -58,11 +58,13 @@ cd web && npm install && npm run build # → web/dist
 按顺序启动四个进程：
 
 ```sh
-# 1. 手机用数据线接上 Mac，先做两件清理
-#    退出桌面版微信：它会自动对 Android 手机做 AOA 握手并独占整个 USB 设备，
-#    此时 libusb claim 报 LIBUSB_ERROR_ACCESS，adb kill-server 不起作用。
-adb kill-server                         # 停掉 adb server，否则 AOA 握手时设备被 adb 占用
-adb shell svc usb setFunctions          # 清掉可能残留的 accessory 模式
+# 1. 手机用数据线接上 Mac，先做三步清理
+#    a) 退出桌面版微信：它会自动对 Android 手机做 AOA 握手并独占整个 USB
+#       设备，此时 libusb claim 报 LIBUSB_ERROR_ACCESS，adb kill-server 无效。
+#    b) 清掉可能残留的 accessory 模式（这一步要 adb，会临时拉起 adb server）
+adb shell svc usb setFunctions
+#    c) 最后停掉 adb server，否则 AOA 握手时设备被 adb 占用
+adb kill-server
 
 # 2. USB 桥接
 ./tools/usb-bridge/carlife-usb-bridge
