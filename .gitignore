@@ -8,3 +8,6 @@
 tools/aoa-probe/aoa-probe
 tools/aoa-probe/*.o
 tools/aoa-probe/*.dSYM/
+tools/usb-bridge/carlife-usb-bridge
+tools/usb-bridge/*.o
+tools/usb-bridge/*.dSYM/
