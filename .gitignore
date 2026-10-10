@@ -11,3 +11,13 @@ tools/aoa-probe/*.dSYM/
 tools/usb-bridge/carlife-usb-bridge
 tools/usb-bridge/*.o
 tools/usb-bridge/*.dSYM/
+host/carlife-host
+host/*.o
+.build/
+
+# 前端
+web/node_modules/
+web/dist/
+
+# Go
+server/carlifed
