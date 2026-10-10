@@ -8,6 +8,10 @@
  *   ./aoa-probe --list                    只枚举 USB 设备
  *   ./aoa-probe                           完整探测：握手 → 重新枚举 → 读帧 10 秒
  *   ./aoa-probe --handshake-only          只发 51/52，不发 53（不改动手机的 USB 状态）
+ *   ./aoa-probe --force-handshake         设备已在 accessory 模式时仍重发 51/52/53
+ *                                         （用 CarLife 描述符覆盖手机上残留的其它 accessory 会话）
+ *   ./aoa-probe --send-proto-version      进入 accessory 后先发 cmd 首帧
+ *                                         MSG_CMD_HU_PROTOCOL_VERSION(0x00018001)，再读回应
  *   ./aoa-probe --read 0                  握手成功后不读帧
  *   ./aoa-probe --read 30                 读帧 30 秒
  *   ./aoa-probe --vid 0x2717 --pid 0x1234  指定目标设备（默认自动挑选）
@@ -44,6 +48,7 @@
 #define CHANNEL_COUNT 6
 #define RETRY_ACCESSORY_MODE 10
 #define RETRY_RESCAN 5
+#define SEND_RETRY 20
 #define DETAIL_FRAMES 20
 
 static const char *const kIdent[6] = {
@@ -64,22 +69,35 @@ struct known_id {
     const char *name;
 };
 
-/* 取自 CarLife-Android-Vehicle/CommonParams.java，均为握手阶段最可能出现的命令 */
+/* 取自 CarLife-Vehicle-Lib/LibSource/include/CTranRecvPackageProcess.h 的 EPackageHeadType。
+ * 命名规律：低 16 位的最高位（0x8000）表示方向 —— 置位 = 车机(HU)发出，清零 = 手机(MD)发出。 */
 static const struct known_id kKnownId[] = {
     {0x00018001UL, "MSG_CMD_HU_PROTOCOL_VERSION"},
     {0x00010002UL, "MSG_CMD_PROTOCOL_VERSION_MATCH_STATUS"},
     {0x00018003UL, "MSG_CMD_HU_INFO"},
     {0x00010004UL, "MSG_CMD_MD_INFO"},
-    {0x00018005UL, "MSG_CMD_HU_BT_OOB_INFO"},
-    {0x00010006UL, "MSG_CMD_MD_BT_OOB_INFO"},
+    {0x00018005UL, "MSG_CMD_HU_BT_PAIR_INFO"},
+    {0x00010006UL, "MSG_CMD_MD_BT_PAIR_INFO"},
     {0x00018007UL, "MSG_CMD_VIDEO_ENCODER_INIT"},
     {0x00010008UL, "MSG_CMD_VIDEO_ENCODER_INIT_DONE"},
     {0x00018009UL, "MSG_CMD_VIDEO_ENCODER_START"},
+    {0x0001800BUL, "MSG_CMD_VIDEO_ENCODER_RESET"},
+    {0x0001800EUL, "MSG_CMD_PAUSE_MEDIA"},
+    {0x00010018UL, "MSG_CMD_SCREEN_ON"},
+    {0x00010019UL, "MSG_CMD_SCREEN_OFF"},
+    {0x0001001BUL, "MSG_CMD_FOREGROUND"},
+    {0x0001001CUL, "MSG_CMD_BACKGROUND"},
+    {0x0001801DUL, "MSG_CMD_LAUNCH_MODE_NORMAL"},
+    {0x00010026UL, "MSG_CMD_MODULE_STATUS"},
+    {0x00018027UL, "MSG_CMD_STATISTIC_INFO"},
+    {0x00018028UL, "MSG_CMD_MODULE_CONTROL"},
 };
 
 struct opts {
     int list_only;
     int handshake_only;
+    int force_handshake;
+    int send_proto;
     int read_seconds;
     int want_vid;
     int want_pid;
@@ -440,6 +458,39 @@ static libusb_device_handle *wait_accessory(libusb_context *ctx, const struct op
     return NULL;
 }
 
+/* 等待指定设备完成 USB 逻辑插拔。
+ * 设备已在 accessory 模式时，重枚举前后 VID:PID 相同，无法据此区分新旧节点；
+ * 因此以「设备消失、或同 VID:PID 的设备换了 USB 地址」作为重枚举完成的判据。 */
+static void wait_rebind(libusb_context *ctx, unsigned short vid, unsigned short pid,
+                        unsigned char old_addr, int max_seconds)
+{
+    int i;
+    for (i = 0; i < max_seconds; i++) {
+        libusb_device **list = NULL;
+        ssize_t n = libusb_get_device_list(ctx, &list);
+        ssize_t k;
+        int same_node_still_there = 0;
+        for (k = 0; k < n; k++) {
+            struct libusb_device_descriptor d;
+            if (libusb_get_device_descriptor(list[k], &d) != 0) {
+                continue;
+            }
+            if (d.idVendor == vid && d.idProduct == pid &&
+                libusb_get_device_address(list[k]) == old_addr) {
+                same_node_still_there = 1;
+                break;
+            }
+        }
+        libusb_free_device_list(list, 1);
+        if (!same_node_still_there) {
+            printf("  原设备节点已失效（第 %d 次检查）\n", i + 1);
+            return;
+        }
+        sleep(1);
+    }
+    printf("  警告：%d 秒内未见重枚举，仍继续\n", max_seconds);
+}
+
 static unsigned char *g_buf = NULL;
 static size_t g_cap = 0;
 
@@ -512,15 +563,127 @@ static void print_frame(unsigned long index, unsigned int ch, unsigned int len,
     }
 }
 
-static int read_frames(libusb_device_handle *h, unsigned char ep_in, int seconds)
+/* 在当前配置里找 accessory 接口的 bulk 端点。
+ * accessory 接口 = class 0xff / subclass 0xff；adb 接口的 subclass 是 0x42，据此区分。
+ * 端点地址随配置变化（accessory 单独存在时是 0x81/0x02，与 adb 共存时是 0x81/0x01），
+ * 因此必须从描述符读，不能硬编码。返回 0 成功。 */
+static int find_accessory_endpoints(libusb_device *dev, unsigned char *ep_in,
+                                    unsigned char *ep_out)
 {
-    time_t deadline = time(NULL) + seconds;
+    struct libusb_config_descriptor *cfg = NULL;
+    int i, j, found = 0;
+
+    *ep_in = 0;
+    *ep_out = 0;
+    if (libusb_get_active_config_descriptor(dev, &cfg) != 0 || cfg == NULL) {
+        return -1;
+    }
+    for (i = 0; i < cfg->bNumInterfaces && !found; i++) {
+        const struct libusb_interface *itf = &cfg->interface[i];
+        const struct libusb_interface_descriptor *alt;
+        unsigned char in = 0, out = 0;
+
+        if (itf->num_altsetting <= 0) {
+            continue;
+        }
+        alt = &itf->altsetting[0];
+        if (alt->bInterfaceClass != 0xff || alt->bInterfaceSubClass != 0xff) {
+            continue;
+        }
+        for (j = 0; j < alt->bNumEndpoints; j++) {
+            const struct libusb_endpoint_descriptor *ep = &alt->endpoint[j];
+            if ((ep->bmAttributes & LIBUSB_TRANSFER_TYPE_MASK) != LIBUSB_TRANSFER_TYPE_BULK) {
+                continue;
+            }
+            if (ep->bEndpointAddress & 0x80) {
+                in = ep->bEndpointAddress;
+            } else {
+                out = ep->bEndpointAddress;
+            }
+        }
+        if (in != 0 && out != 0) {
+            *ep_in = in;
+            *ep_out = out;
+            found = 1;
+        }
+    }
+    libusb_free_config_descriptor(cfg);
+    return found ? 0 : -1;
+}
+
+/* 发送 CarLife 首帧（cmd 通道）：MSG_CMD_HU_PROTOCOL_VERSION = 0x00018001。
+ *
+ * 帧结构（全大端）：
+ *   [4B channelId=1][4B totalLen]           AOA 头
+ *   [2B bodyLen][2B 保留][4B serviceType]   CarLife cmd 消息头（8B）
+ *   body                                    protobuf
+ * totalLen = 8 + bodyLen（含内层消息头，不含 AOA 头），与参考实现
+ * AOAConnectManager 的 `lenMsgHead + lenMsgData` 一致。
+ * AOA 头与消息体必须分为两次 bulk transfer，参考实现也是两个连续的
+ * bulkTransferOut 调用。
+ *
+ * body = CarlifeProtocolVersion{ majorVersion=1, minorVersion=0 }
+ *      → 08 01 (field1 varint=1) 10 00 (field2 varint=0)，共 4 字节。
+ *
+ * 返回 0 成功；失败返回负的 libusb 错误码。刚重枚举完时手机端 App 可能还没拿到
+ * accessory 句柄，此时 OUT 会以 LIBUSB_ERROR_TIMEOUT 失败，调用方需重试。 */
+static int send_protocol_version(libusb_device_handle *h, unsigned char ep_out)
+{
+    unsigned char aoa[8];
+    unsigned char msg[12];
+    const unsigned int channel = 1;
+    const unsigned int body_len = 4;
+    const unsigned int total = 8 + body_len;
+    const unsigned int service = 0x00018001u;
+    int r, sent = 0;
+
+    memset(msg, 0, sizeof(msg));
+    msg[0] = (unsigned char)((body_len >> 8) & 0xff);
+    msg[1] = (unsigned char)(body_len & 0xff);
+    msg[4] = (unsigned char)((service >> 24) & 0xff);
+    msg[5] = (unsigned char)((service >> 16) & 0xff);
+    msg[6] = (unsigned char)((service >> 8) & 0xff);
+    msg[7] = (unsigned char)(service & 0xff);
+    msg[8] = 0x08;  /* protobuf field 1, varint */
+    msg[9] = 0x01;  /* majorVersion = 1 */
+    msg[10] = 0x10; /* protobuf field 2, varint */
+    msg[11] = 0x00; /* minorVersion = 0 */
+
+    aoa[0] = (unsigned char)((channel >> 24) & 0xff);
+    aoa[1] = (unsigned char)((channel >> 16) & 0xff);
+    aoa[2] = (unsigned char)((channel >> 8) & 0xff);
+    aoa[3] = (unsigned char)(channel & 0xff);
+    aoa[4] = (unsigned char)((total >> 24) & 0xff);
+    aoa[5] = (unsigned char)((total >> 16) & 0xff);
+    aoa[6] = (unsigned char)((total >> 8) & 0xff);
+    aoa[7] = (unsigned char)(total & 0xff);
+
+    r = libusb_bulk_transfer(h, ep_out, aoa, 8, &sent, BULK_TIMEOUT_MS);
+    if (r != 0) {
+        return r;
+    }
+    if (sent != 8) {
+        return LIBUSB_ERROR_IO;
+    }
+    r = libusb_bulk_transfer(h, ep_out, msg, 12, &sent, BULK_TIMEOUT_MS);
+    if (r != 0) {
+        return r;
+    }
+    if (sent != 12) {
+        return LIBUSB_ERROR_IO;
+    }
+    return 0;
+}
+
+static int read_frames(libusb_device_handle *h, unsigned char ep_in, unsigned char ep_out, int seconds)
+{
+    time_t deadline;
     unsigned long frames = 0;
     unsigned long per_ch_count[CHANNEL_COUNT + 1] = {0};
     unsigned long long per_ch_bytes[CHANNEL_COUNT + 1] = {0};
     unsigned long long total_bytes = 0;
     int printed = 0;
-    time_t last_report = time(NULL);
+    time_t last_report;
     int rc = libusb_claim_interface(h, 0);
     int exit_code = 0;
 
@@ -528,7 +691,34 @@ static int read_frames(libusb_device_handle *h, unsigned char ep_in, int seconds
         printf("  接口 claim 失败：%s %s\n", libusb_error_name(rc), error_hint(rc));
         return -1;
     }
-    printf("  已 claim 接口 0，开始读帧（%d 秒）…\n", seconds);
+    printf("  已 claim 接口 0\n");
+
+    if (ep_out != 0) {
+        int attempt, sr = 0;
+        for (attempt = 1; attempt <= SEND_RETRY; attempt++) {
+            sr = send_protocol_version(h, ep_out);
+            if (sr == 0) {
+                printf("  已发送 cmd 首帧（第 %d 次尝试）：AOA[channel=1 totalLen=12] + 头[bodyLen=4 "
+                       "保留=0000 type=0x00018001] + body[08 01 10 00]\n",
+                       attempt);
+                break;
+            }
+            if (attempt == 1) {
+                printf("  手机端尚未就绪（%s），重试发送…\n", libusb_error_name(sr));
+            }
+            sleep(1);
+        }
+        if (attempt > SEND_RETRY) {
+            printf("  发送失败：%d 次重试后仍为 %s（手机端 App 可能未取得 accessory）\n", SEND_RETRY,
+                   libusb_error_name(sr));
+            libusb_release_interface(h, 0);
+            return -1;
+        }
+    }
+
+    deadline = time(NULL) + seconds;
+    last_report = time(NULL);
+    printf("  开始读帧（%d 秒）…\n", seconds);
 
     for (;;) {
         unsigned char hdr[8];
@@ -600,6 +790,8 @@ static void usage(const char *argv0)
     printf("用法：%s [选项]\n", argv0);
     printf("  --list                 只枚举 USB 设备，不触碰任何设备\n");
     printf("  --handshake-only       只发 51/52，不发 53（不改动手机 USB 状态）\n");
+    printf("  --force-handshake      设备已在 accessory 模式时仍重发 51/52/53\n");
+    printf("  --send-proto-version   先发 cmd 首帧 MSG_CMD_HU_PROTOCOL_VERSION 再读回应\n");
     printf("  --read <秒>            进入 accessory 模式后读帧时长，默认 10，0 表示不读\n");
     printf("  --vid <0xXXXX>         指定目标设备的 VID\n");
     printf("  --pid <0xXXXX>         指定目标设备的 PID\n");
@@ -626,6 +818,10 @@ int main(int argc, char **argv)
             o.list_only = 1;
         } else if (strcmp(argv[i], "--handshake-only") == 0) {
             o.handshake_only = 1;
+        } else if (strcmp(argv[i], "--force-handshake") == 0) {
+            o.force_handshake = 1;
+        } else if (strcmp(argv[i], "--send-proto-version") == 0) {
+            o.send_proto = 1;
         } else if (strcmp(argv[i], "--read") == 0 && i + 1 < argc) {
             o.read_seconds = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--vid") == 0 && i + 1 < argc) {
@@ -675,10 +871,17 @@ int main(int argc, char **argv)
     printf("== 2. 设备描述符 ==\n");
     describe_config(libusb_get_device(h));
 
-    if (pk.is_accessory) {
+    if (pk.is_accessory && !o.force_handshake) {
         printf("== 3. 握手 ==\n  设备已处于 accessory 模式，跳过 51/52/53\n");
     } else {
+        unsigned char old_addr = 0;
+        int forced = pk.is_accessory;
+
         printf("== 3. AOA 握手 ==\n");
+        if (forced) {
+            old_addr = libusb_get_device_address(libusb_get_device(h));
+            printf("  --force-handshake：设备已在 accessory 模式，仍重发 51/52/53 覆盖其描述符\n");
+        }
         rc = libusb_claim_interface(h, 0);
         if (rc != 0) {
             printf("  接口 0 claim 失败：%s %s\n", libusb_error_name(rc), error_hint(rc));
@@ -698,6 +901,10 @@ int main(int argc, char **argv)
             goto out;
         }
 
+        if (forced) {
+            wait_rebind(ctx, pk.vid, pk.pid, old_addr, RETRY_ACCESSORY_MODE);
+        }
+
         printf("== 4. 等待 accessory 模式重新枚举 ==\n");
         h = wait_accessory(ctx, &o, &pk);
         if (h == NULL) {
@@ -709,10 +916,19 @@ int main(int argc, char **argv)
         describe_config(libusb_get_device(h));
     }
 
-    if (o.read_seconds > 0) {
+    if (o.read_seconds > 0 || o.send_proto) {
         unsigned char ep_in = 0x81;
+        unsigned char ep_out = 0;
         printf("== 6. 读帧验证 ==\n");
-        if (read_frames(h, ep_in, o.read_seconds) != 0) {
+        if (o.send_proto) {
+            if (find_accessory_endpoints(libusb_get_device(h), &ep_in, &ep_out) != 0) {
+                printf("  未找到 accessory 接口（class 0xff / subclass 0xff），退回默认端点\n");
+                ep_in = 0x81;
+                ep_out = 0x01;
+            }
+            printf("  accessory 端点：IN=0x%02x OUT=0x%02x\n", ep_in, ep_out);
+        }
+        if (read_frames(h, ep_in, ep_out, o.read_seconds) != 0) {
             exit_code = 1;
         }
     } else {
