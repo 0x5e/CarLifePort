@@ -15,6 +15,12 @@ import (
 const (
 	watchdogInterval    = 2 * time.Second
 	watchdogIdleTimeout = 5 * time.Second
+	// The phone only reports the authentication verdict after the head unit asks for it,
+	// and a verdict can be lost when the phone app was restarted, so the exchange is
+	// repeated until the phone confirms.
+	authenRetryInterval = 30 * time.Second
+	// Window over which the received video frame rate is measured.
+	fpsReportInterval = 5 * time.Second
 )
 
 // clientMessage is the JSON control message the playport web client sends. It mirrors
@@ -72,6 +78,18 @@ type session struct {
 
 	streaming bool
 
+	// Head unit authentication: the phone warns and eventually disconnects an
+	// unauthenticated head unit, so the exchange is driven from here until the phone
+	// confirms.
+	authenDone    bool
+	lastAuthenTry time.Time
+
+	// Received video frames over the current measurement window, reported periodically
+	// to tell a phone-side frame rate limit apart from frames lost on our side.
+	frameCount int
+	frameBytes int
+	fpsWindow  time.Time
+
 	touchDown bool
 
 	audioSampleRate map[byte]int
@@ -93,6 +111,7 @@ func newSession(host *hostClient, hub *Hub, width, height, fps int) *session {
 		audioChannels:   make(map[byte]int),
 		audioSamples:    make(map[byte]uint64),
 		lastProgress:    time.Now(),
+		fpsWindow:       time.Now(),
 	}
 }
 
@@ -113,6 +132,10 @@ func (s *session) resetStream() {
 	s.audioChannels = make(map[byte]int)
 	s.audioSamples = make(map[byte]uint64)
 	s.lastProgress = time.Now()
+	s.authenDone = false
+	s.frameCount = 0
+	s.frameBytes = 0
+	s.fpsWindow = time.Now()
 	s.mu.Unlock()
 }
 
@@ -137,13 +160,52 @@ func (s *session) sessionWatchdog(ctx context.Context) {
 			// Space the retries out instead of firing on every tick.
 			s.lastProgress = time.Now()
 		}
+		retryAuthen := s.hostReady && !s.authenDone && time.Since(s.lastAuthenTry) >= authenRetryInterval
 		s.mu.Unlock()
-		if !stalled {
-			continue
+		if stalled {
+			log.Printf("no CarLife session yet (idle %s), resending protocol version", idle.Truncate(time.Second))
+			s.startHandshake()
 		}
-		log.Printf("no CarLife session yet (idle %s), resending protocol version", idle.Truncate(time.Second))
-		s.startHandshake()
+		if retryAuthen {
+			s.requestAuthentication()
+		}
+		s.reportFrameRate()
 	}
+}
+
+// requestAuthentication starts the head unit authentication exchange. Repeating it is
+// harmless: the host skips the request once the phone has confirmed.
+func (s *session) requestAuthentication() {
+	s.mu.Lock()
+	s.lastAuthenTry = time.Now()
+	s.mu.Unlock()
+	if err := s.host.sendAuthenRequest(); err != nil {
+		log.Printf("failed to start head unit authentication: %v", err)
+		return
+	}
+	log.Printf("running head unit authentication exchange (retry every %s until the phone confirms)",
+		authenRetryInterval)
+}
+
+// reportFrameRate logs the measured rate of the video frames arriving from the phone,
+// which is what tells a phone-side limit apart from frames lost on this side.
+func (s *session) reportFrameRate() {
+	s.mu.Lock()
+	elapsed := time.Since(s.fpsWindow)
+	if !s.streaming || elapsed < fpsReportInterval {
+		s.mu.Unlock()
+		return
+	}
+	frames, total, requested := s.frameCount, s.frameBytes, s.requestedFPS
+	s.frameCount, s.frameBytes, s.fpsWindow = 0, 0, time.Now()
+	s.mu.Unlock()
+
+	if frames == 0 {
+		log.Printf("video: no frames in the last %s", elapsed.Truncate(time.Second))
+		return
+	}
+	log.Printf("video: %.1f fps received (%d frames, %.1f KB/s) in the last %s, requested %d fps",
+		float64(frames)/elapsed.Seconds(), frames, float64(total)/1024/elapsed.Seconds(), elapsed.Truncate(time.Second), requested)
 }
 
 /* ------------------------------------------------------------ carlife-host events */
@@ -192,6 +254,7 @@ func (s *session) onCommandEvent(event hostEvent) {
 			log.Printf("protocol version match status: %d", binary.BigEndian.Uint32(event.payload))
 		}
 		s.requestVideo()
+		s.requestAuthentication()
 
 	case evVideoInitDone:
 		if len(event.payload) < 12 {
@@ -202,8 +265,12 @@ func (s *session) onCommandEvent(event hostEvent) {
 		fps := int(binary.BigEndian.Uint32(event.payload[8:]))
 		s.mu.Lock()
 		s.width, s.height = width, height
+		requestedFPS := s.requestedFPS
 		s.mu.Unlock()
 		log.Printf("phone ready, video %dx%d@%d, starting encoder", width, height, fps)
+		if fps > 0 && fps < requestedFPS {
+			log.Printf("phone limited the frame rate to %d fps (requested %d)", fps, requestedFPS)
+		}
 		if err := s.host.sendVideoEncoderStart(); err != nil {
 			log.Printf("failed to start video encoder: %v", err)
 		}
@@ -246,6 +313,17 @@ func (s *session) onCommandEvent(event hostEvent) {
 
 	case evMicRecog:
 		log.Printf("voice recognition in progress")
+
+	case evAuthenResult:
+		passed := len(event.payload) >= 1 && event.payload[0] == 1
+		s.mu.Lock()
+		s.authenDone = passed
+		s.mu.Unlock()
+		if passed {
+			log.Printf("phone authenticated this head unit")
+		} else {
+			log.Printf("phone rejected this head unit; retrying authentication in %s", authenRetryInterval)
+		}
 
 	case evFeatureConfigRequest:
 		log.Printf("replied to phone feature config request")
@@ -329,6 +407,15 @@ func (s *session) onVideoData(data []byte) {
 	}
 	first := !s.streaming
 	s.streaming = true
+	if first {
+		// Measure from the first frame; otherwise the first window covers the idle time
+		// before the stream started and reports a rate that is too low.
+		s.frameCount = 0
+		s.frameBytes = 0
+		s.fpsWindow = time.Now()
+	}
+	s.frameCount++
+	s.frameBytes += len(data)
 	width, height := s.width, s.height
 	if width <= 0 || height <= 0 {
 		// The encoder-init-done message never arrived (possible after a link rebuild), so

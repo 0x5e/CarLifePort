@@ -21,7 +21,7 @@ func main() {
 	deviceName := flag.String("device-name", "CarLife", "head unit name shown in the web client")
 	width := flag.Int("width", 1280, "requested phone video width")
 	height := flag.Int("height", 720, "requested phone video height")
-	fps := flag.Int("fps", 30, "requested phone video frame rate")
+	fps := flag.Int("fps", 60, "requested phone video frame rate (the phone may cap it; the accepted value is logged)")
 	flag.Parse()
 
 	log.SetFlags(log.Ltime)

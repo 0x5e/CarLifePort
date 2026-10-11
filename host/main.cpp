@@ -23,10 +23,12 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <string>
@@ -383,6 +385,53 @@ static void cb_navi_next_turn(S_NAVI_NEXT_TURN_INFO* info)
     log_line("navigation turn prompt: action=%u nextTurn=%u road=%s", info->action, info->nextTurn, info->roadName.c_str());
 }
 
+/* ------------------------------------------------------- Head unit authentication
+ *
+ * The phone expects the head unit to run the authentication exchange below; when it
+ * never happens, CarLife warns about an unauthenticated head unit and eventually drops
+ * the connection:
+ *   head unit --MSG_CMD_HU_AUTHEN_REQUEST (randomValue)--> phone
+ *   phone     --MSG_CMD_MD_AUTHEN_RESPONSE (encryptValue)--> head unit
+ *   head unit --MSG_CMD_HU_AUTHEN_RESULT (authenResult)--> phone
+ *   phone     --MSG_CMD_MD_AUTHEN_RESULT (authenResult)--> head unit
+ *
+ * The open vehicle library ships no Baidu certificate, so the encrypted value cannot be
+ * checked. The head unit is the side that reports the verdict, so the exchange is
+ * completed with a positive result. */
+static uint8_t g_authen_result = 0;
+
+static void send_authen_request(void)
+{
+    static const char alphabet[] = "0123456789abcdef";
+    S_AUTHEN_REQUEST request;
+    request.randomValue.assign(16, '0');
+    for (size_t i = 0; i < request.randomValue.size(); ++i) {
+        request.randomValue[i] = alphabet[rand() % 16];
+    }
+    if (CCarLifeLib::getInstance()->cmdHuAuthenRequest(&request) < 0) {
+        log_line("failed to send head unit authentication request");
+        return;
+    }
+    log_line("sent head unit authentication request");
+}
+
+static void cb_md_authen_response(S_AUTHEN_RESPONSE* response)
+{
+    log_line("phone authentication response received (%u bytes)", (unsigned int)response->encryptValue.size());
+    S_HU_AUTHEN_RESULT result;
+    result.authenResult = true;
+    if (CCarLifeLib::getInstance()->cmdHuAuthenResult(&result) < 0) {
+        log_line("failed to send head unit authentication result");
+    }
+}
+
+static void cb_md_authen_result(S_MD_AUTHEN_RESULT* result)
+{
+    g_authen_result = result->authenResult ? 1 : 0;
+    log_line("phone authentication result: %s", result->authenResult ? "authenticated" : "rejected");
+    send_frame(CH_CMD, EV_AUTHEN_RESULT, &g_authen_result, 1);
+}
+
 /* On a feature config request from the phone, reply with FOCUS_UI following the
  * library's bundled reference implementation; otherwise the phone keeps waiting */
 static S_FEATURE_CONFIG_LIST g_feature_config_list;
@@ -513,6 +562,8 @@ static void* cmd_receive_thread(void*)
     lib->cmdRegisterNaviNextTurnInfo(cb_navi_next_turn);
     lib->cmdRegisterFeatureConfigRequest(cb_feature_config_request);
     lib->cmdRegisterMdExit(cb_md_exit);
+    lib->cmdRegisterMdAuthenResponse(cb_md_authen_response);
+    lib->cmdRegisterMdAuthenResult(cb_md_authen_result);
 
     while (lib->cmdReceiveOperation() != -1) {
     }
@@ -649,6 +700,13 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             break;
         case CMD_LAUNCH_MODE_MUSIC:
             lib->cmdLaunchModeMusic();
+            break;
+        case CMD_AUTHEN_REQUEST:
+            if (g_authen_result == 1) {
+                log_line("head unit already authenticated, skipping authentication request");
+                break;
+            }
+            send_authen_request();
             break;
         default:
             log_line("unknown command channel tag=%u", tag);
@@ -917,6 +975,9 @@ int main(int argc, char** argv)
 
     /* Do not get killed by SIGPIPE when the peer disconnects first */
     signal(SIGPIPE, SIG_IGN);
+
+    /* Seed the random value of the authentication request */
+    srand((unsigned int)time(NULL) ^ (unsigned int)getpid());
 
     g_listen_fd = listen_unix(socket_path);
     if (g_listen_fd < 0) {

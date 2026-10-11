@@ -23,6 +23,9 @@ HOST="host/carlife-host"
 SERVER="server/carlifed"
 TOKEN="carlife"
 WEB="vendor/playport/web/dist"
+# Frame rate requested from the phone. The phone reports the rate it accepted in the log
+# ("phone limited the frame rate to 30"); lower this if 60 is not accepted.
+FPS="${FPS:-60}"
 
 # ---------------------------------------------------------------- prechecks
 for f in "$BRIDGE" "$HOST" "$SERVER"; do
@@ -82,6 +85,7 @@ start() {
 cat <<EOF
 
 == open http://127.0.0.1:8080/?token=$TOKEN in a browser
+== requesting video at $FPS fps (override with FPS=30 ./scripts/run.sh)
 == open the CarLife app on the phone and confirm the connection
 == the phone may be plugged in before or after this script starts
 == unplugging and replugging the phone rebuilds the link automatically
@@ -89,7 +93,7 @@ cat <<EOF
 
 EOF
 
-start server "$SERVER" --token "$TOKEN"
+start server "$SERVER" --token "$TOKEN" --fps "$FPS"
 server_pid=$LAST_PID
 PIDS=("$server_pid")
 

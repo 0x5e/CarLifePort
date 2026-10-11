@@ -106,8 +106,28 @@ server/carlifed --addr 127.0.0.1:8080 \
                 --host-socket /tmp/carlife-host.sock \
                 --web vendor/playport/web/dist \
                 --token carlife \
-                --width 1280 --height 720 --fps 30
+                --width 1280 --height 720 --fps 60
 ```
+
+`run.sh` 里帧率默认 60，可用环境变量覆盖：`FPS=30 ./scripts/run.sh`。实际帧率由手机
+决定，后端每 5 秒打印一行实测值（`video: 29.8 fps received ...`），手机把帧率压低时也
+会打印（`phone limited the frame rate to 30`）。
+
+### 车机鉴权
+
+手机会要求车机走完鉴权流程，没走完就会提示「未认证的车机端」并在几分钟后断开：
+
+```
+车机 --MSG_CMD_HU_AUTHEN_REQUEST(randomValue)--> 手机
+手机 --MSG_CMD_MD_AUTHEN_RESPONSE(encryptValue)--> 车机
+车机 --MSG_CMD_HU_AUTHEN_RESULT(authenResult)--> 手机
+手机 --MSG_CMD_MD_AUTHEN_RESULT(authenResult)--> 车机
+```
+
+`carlifed` 在协议版本匹配成功后发起该流程，并在未收到手机确认前每 30 秒重发一次；
+`carlife-host` 收到手机响应后直接上报通过（开源车机库没有百度证书，`encryptValue`
+无法校验，而这条流程里上报结果的一方本来就是车机）。日志里会看到
+`phone authenticated this head unit`。
 
 ## 与 playport 前端的接口对齐
 
@@ -142,6 +162,9 @@ Siri 和夜间模式，按下表映射：
 - 触摸是单点，CarLife 协议本身不支持多指：前端的多点触点只有 id 最小的那个生效。
 - 麦克风上行未接通：CarLife 的语音通道由手机发起，服务端不向浏览器请求麦克风。
 - 视频只有 H.264；音频按 16 位 PCM 处理。
+- 帧率由手机决定：请求 60 fps 时手机可能仍按 30 fps 编码，后端只能报告实测值。
+- 车机鉴权由车机端自行上报通过，开源库没有百度证书，无法校验手机返回的
+  `encryptValue`；若手机仍判定未认证，只能换用官方认证过的车机端实现。
 - 重新插拔要重建 `carlife-host`，`run.sh` 会自动做；手工单独运行时需自己重启。
 - 手机侧 CarLife App 是系统在 accessory 附着时拉起的，比链路就绪慢几秒。`carlifed`
   每 5 秒重发一次协议版本直到会话建立，用来覆盖这段延迟；一直连不上手机时会持续重发。

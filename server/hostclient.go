@@ -39,6 +39,7 @@ const (
 	evMDExit               byte = 14
 	evModuleStatus         byte = 15
 	evFeatureConfigRequest byte = 16
+	evAuthenResult         byte = 17
 	evLog                  byte = 90
 
 	evVideoData      byte = 1
@@ -64,6 +65,7 @@ const (
 	cmdLaunchModePhone   byte = 8
 	cmdLaunchModeMap     byte = 9
 	cmdLaunchModeMusic   byte = 10
+	cmdAuthenRequest     byte = 11
 
 	cmdTouchAction      byte = 1
 	cmdTouchDown        byte = 2
@@ -210,6 +212,12 @@ func (h *hostClient) sendVideoEncoderStart() error {
 
 func (h *hostClient) sendGoToForeground() error {
 	return h.send(chCmd, cmdGoToForeground, nil)
+}
+
+// sendAuthenRequest starts the head unit authentication exchange. The host ignores it
+// once the phone has confirmed authentication.
+func (h *hostClient) sendAuthenRequest() error {
+	return h.send(chCmd, cmdAuthenRequest, nil)
 }
 
 func (h *hostClient) sendTouch(action, x, y int32) error {

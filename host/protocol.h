@@ -55,6 +55,7 @@ enum {
     EV_MD_EXIT = 14,
     EV_MODULE_STATUS = 15,      /* UTF-8 JSON */
     EV_FEATURE_CONFIG_REQUEST = 16,
+    EV_AUTHEN_RESULT = 17,      /* [1B result] 1 = the phone authenticated this head unit */
     EV_LOG = 90                 /* UTF-8 text, for diagnostics */
 };
 
@@ -87,7 +88,8 @@ enum {
     CMD_LAUNCH_MODE_NORMAL = 7,
     CMD_LAUNCH_MODE_PHONE = 8,
     CMD_LAUNCH_MODE_MAP = 9,
-    CMD_LAUNCH_MODE_MUSIC = 10
+    CMD_LAUNCH_MODE_MUSIC = 10,
+    CMD_AUTHEN_REQUEST = 11     /* starts the head unit authentication exchange */
 };
 
 /* CH_CTRL -- action values follow Android MotionEvent: 0=DOWN 1=UP 2=MOVE */
