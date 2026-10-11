@@ -69,19 +69,23 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 
 三个进程的日志带 `[bridge]` / `[host]` / `[server]` 前缀输出到同一终端，Ctrl-C 停止全部。
 
-然后浏览器打开脚本打印的那个地址（默认 <http://127.0.0.1:8080/?token=carlife>）。
-地址里的 `token` 是 playport 前端要求的访问令牌，缺了它前端不会建立连接。
-首次打开后令牌会存在 localStorage，之后直接访问 <http://127.0.0.1:8080> 也可以。
+然后浏览器打开脚本打印的任意一个地址。默认监听 `0.0.0.0:8080`，启动时会像 vite
+一样把每张网卡的地址都打出来（带网卡名）：
 
-监听地址绑到通配地址时会像 vite 一样把每张网卡的地址都打出来（带网卡名）：
-
-```sh
-ADDR=0.0.0.0:8080 ./scripts/run.sh        # 或 carlifed --addr 0.0.0.0:8080
-#   viewer URL   http://127.0.0.1:8080/?token=carlife
-#   viewer URL   http://192.168.40.2:8080/?token=carlife (en0)
+```
+  viewer URL   http://127.0.0.1:8080/?token=carlife
+  viewer URL   http://192.168.40.2:8080/?token=carlife (en0)
 ```
 
-只绑 127.0.0.1 时只有本地那一条，因为其它地址本来就访问不到。
+地址里的 `token` 是 playport 前端要求的访问令牌，缺了它前端不会建立连接。
+首次打开后令牌会存在 localStorage，之后不带 `?token=` 直接访问也可以。
+
+默认对外可访问（局域网内其它机器也能打开这个页面，上面就是手机画面和控制通道，
+保护只有这一层 token）。要限制成本机访问：
+
+```sh
+ADDR=127.0.0.1:8080 ./scripts/run.sh      # 或 carlifed --addr 127.0.0.1:8080
+```
 
 ### 手机什么时候插都行
 

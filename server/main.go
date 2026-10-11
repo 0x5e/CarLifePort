@@ -81,7 +81,7 @@ func interfaceAddresses() []listenAddress {
 }
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
+	addr := flag.String("addr", "0.0.0.0:8080", "HTTP listen address")
 	hostSocket := flag.String("host-socket", "/tmp/carlife-host.sock", "Unix socket path of carlife-host")
 	webDir := flag.String("web", defaultWebDir, "static web asset directory")
 	token := flag.String("token", "carlife", "access token the browser client must present")
