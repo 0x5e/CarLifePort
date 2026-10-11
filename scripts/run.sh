@@ -25,9 +25,9 @@ WEB="vendor/playport/web/dist"
 # The listen address, the requested frame rate and the access token are not passed to
 # carlifed here: it reads ADDR, FPS and TOKEN from the environment and carries its own
 # defaults, so this script does not have to restate them. See server/main.go.
-# Head unit identity reporting (statistic info / hu info) is disabled for now, so the
-# vendor channel number is not passed either. See README.
-# CHANNEL="${CHANNEL:-}"
+# Head unit identity reporting (statistic info / hu info) is on, and the vendor channel
+# number it carries is a flag on carlife-host that already has a default (20000000). Add
+# --channel here to try another one. See README ("Head unit identity").
 
 # ---------------------------------------------------------------- prechecks
 for f in "$BRIDGE" "$HOST" "$SERVER"; do
@@ -104,7 +104,7 @@ PIDS=("$server_pid")
 while :; do
     start bridge "$BRIDGE"
     bridge_pid=$LAST_PID
-    # The channel number is not passed while head unit identity reporting is disabled.
+    # The channel number is left to carlife-host's own default; see above.
     start host "$HOST"
     host_pid=$LAST_PID
     PIDS=("$server_pid" "$bridge_pid" "$host_pid")

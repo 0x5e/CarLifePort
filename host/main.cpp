@@ -49,13 +49,13 @@ static int g_connection_result = -1;
 static int g_quiet = 0;
 static int g_verbose = 0;
 
-/* Identity reported to the phone during the handshake. The channel number is the one
- * Baidu issues to a head unit vendor after a front-fit project is approved; the open
- * source vehicle library has none, so this is a placeholder that can be overridden
- * with --channel once a real value is available. See README ("Head unit identity").
- *
- * Both are unused at the moment because the identity reporting is disabled below. */
-static std::string g_channel = "CarLife";
+/* Identity reported to the phone during the handshake. The phone authenticates the head
+ * unit from the statistics info it sends and checks the vendor channel number Baidu hands
+ * out to head unit vendors (guide 17.2); the open source vehicle library ships none, so
+ * this is the aftermarket channel its own build defaults to, "20000000"
+ * (CommonParams.VEHICLE_CHANNEL_AFTER_MARKET). Override with --channel. See README
+ * ("Head unit identity"). */
+static std::string g_channel = "20000000";
 static std::string g_cuid = "CarLifePort";
 
 /* -------------------------------------------------------- Logging and utils */
@@ -402,16 +402,15 @@ static void cb_navi_next_turn(S_NAVI_NEXT_TURN_INFO* info)
  *   head unit --MSG_CMD_STATISTIC_INFO (0x00018027)--> phone
  *   head unit --MSG_CMD_HU_INFO (0x00018003)--> phone
  *
- * The library's bundled test program sends neither. Statistics info carries the vendor
- * channel number, which is what the phone checks before it treats the head unit as
- * authenticated, so an unreported identity is a plausible cause of the "unauthenticated
- * head unit" warning.
+ * The library's bundled test program sends neither.
  *
- * Disabled for now. Sending the two messages did not stop the phone from warning about
- * an unauthenticated head unit, so the handshake is being narrowed down by elimination:
- * the authentication exchange is off and so is this. Kept ready for when a real vendor
- * channel number is available. */
-#if 0
+ * The two messages carry more than statistics: the phone authenticates the head unit from
+ * the statistics info it receives (guide 17.2), and only once that check passes does it
+ * answer with MD_AUTHEN_RESULT and start the vendor specific services -- which is what
+ * makes it ask for the feature configuration (MSG_CMD_MD_FEATURE_CONFIG_REQUEST
+ * 0x00010051). With no identity reported at all the phone never asks, and the feature
+ * config reply below has nothing to answer. Guide 17.2.2 also warns that a cuid shared by
+ * two head units makes the phone drop the connection. */
 static unsigned int g_connect_count = 0;
 
 static void send_statistic_info(void)
@@ -422,7 +421,7 @@ static void send_statistic_info(void)
     info.versionCode = 1;
     info.channel = g_channel;
     info.connectCount = ++g_connect_count;
-    info.connectSuccessCount = g_connect_count;
+    info.connectSuccessCount = 1; /* the reference head unit always reports 1 (CarlifeUtil) */
     info.connectTime = 0; /* the units of this counter are not documented */
     info.crashLog = "";
 
@@ -473,7 +472,6 @@ static void send_hu_info(void)
     log_line("sent head unit info (model=%s, host=%s, release=%s)", info.model.c_str(),
              info.host.c_str(), info.release.c_str());
 }
-#endif
 
 /* ------------------------------------------------------- Head unit authentication
  *
@@ -522,22 +520,69 @@ static void cb_md_authen_result(S_MD_AUTHEN_RESULT* result)
     send_frame(CH_CMD, EV_AUTHEN_RESULT, &g_authen_result, 1);
 }
 
-/* On a feature config request from the phone, reply with FOCUS_UI following the
- * library's bundled reference implementation; otherwise the phone keeps waiting */
+/* Feature configuration the phone asks for once the handshake has passed. The keys and
+ * values are the ones the open source head unit reports (CarlifeConfUtil defaults, sent
+ * by FeatureConfigManager), so that a difference in phone behaviour cannot be blamed on
+ * this message. AUDIO_TRANSMISSION_MODE is the one that matters for audio: 0 asks for the
+ * dedicated channel instead of Bluetooth. INPUT_DISABLE is left out on purpose - the guide
+ * does not document it, its effect is on the phone only, and touch input works without it.
+ *
+ * The library serializes the list as a linked list, walking it cnt times, so cnt has to
+ * match the chain length. */
 static S_FEATURE_CONFIG_LIST g_feature_config_list;
-static S_FEATURE_CONFIG g_feature_config_focus_ui;
+static S_FEATURE_CONFIG g_feature_config[9];
 
 static void cb_feature_config_request(void)
 {
-    g_feature_config_list.cnt = 1;
-    g_feature_config_list.pFeatureConfig = &g_feature_config_focus_ui;
-    g_feature_config_focus_ui.key = "FOCUS_UI";
-    g_feature_config_focus_ui.value = 1;
-    g_feature_config_focus_ui.pNext = NULL;
+    static const struct {
+        const char* key;
+        uint32_t value;
+    } entries[] = {
+        {"VOICE_WAKEUP", 1},            /* ENABLE */
+        {"BLUETOOTH_AUTO_PAIR", 0},     /* DISABLE */
+        {"BLUETOOTH_INTERNAL_UI", 0},   /* DISABLE */
+        {"FOCUS_UI", 0},                /* DISABLE */
+        {"VOICE_MIC", 0},               /* USE_VEHICLE_MIC */
+        {"MEDIA_SAMPLE_RATE", 0},       /* ORIGINAL_SAMPLE_RATE: the phone picks it */
+        {"AUDIO_TRANSMISSION_MODE", 0}, /* INDEPENDENT_CHANNEL_MODE, not Bluetooth */
+        {"CONTENT_ENCRYPTION", 0},      /* DISABLE */
+        {"ENGINE_TYPE", 0},             /* OIL */
+    };
+    const int count = (int)(sizeof(entries) / sizeof(entries[0]));
+
+    for (int i = 0; i < count; ++i) {
+        g_feature_config[i].key = entries[i].key;
+        g_feature_config[i].value = entries[i].value;
+        g_feature_config[i].pNext = (i + 1 < count) ? &g_feature_config[i + 1] : NULL;
+    }
+    g_feature_config_list.cnt = (u32)count;
+    g_feature_config_list.pFeatureConfig = &g_feature_config[0];
     CCarLifeLib::getInstance()->cmdFeatureConfigResponse(&g_feature_config_list);
 
     send_frame(CH_CMD, EV_FEATURE_CONFIG_REQUEST, NULL, 0);
-    log_line("replied to phone feature config request (FOCUS_UI=1)");
+    log_line("replied to phone feature config request (%d keys, audio over the dedicated "
+             "channel, no content encryption)",
+             count);
+}
+
+/* What the phone's media player is doing, reported on the command channel: the track
+ * whenever it changes and the position once a second while it plays. Neither drives
+ * anything, but they are the only way to tell whether the phone's music module is really
+ * running - which is what decides whether the audio channel carries anything at all. */
+static void cb_media_info(S_MEDIA_INFO* info)
+{
+    log_line("media info: %s - %s [%s] %u s", info->song.c_str(), info->artist.c_str(),
+             info->source.c_str(), info->duration);
+}
+
+static void cb_media_progress_bar(S_MEDIA_PROGRESS_BAR* progress)
+{
+    log_line("media progress: %u ms", progress->progressBar);
+}
+
+static void cb_connect_exception(S_CONNECTION_EXCEPTION* exception)
+{
+    log_line("phone reported a connection exception, type %u", exception->exceptionType);
 }
 
 static void cb_md_exit(void)
@@ -651,6 +696,9 @@ static void* cmd_receive_thread(void*)
     lib->cmdRegisterModuleStatus(cb_module_status);
     lib->cmdRegisterNaviNextTurnInfo(cb_navi_next_turn);
     lib->cmdRegisterFeatureConfigRequest(cb_feature_config_request);
+    lib->cmdRegisterMediaInfo(cb_media_info);
+    lib->cmdRegisterMediaProgressBar(cb_media_progress_bar);
+    lib->cmdRegisterConnectException(cb_connect_exception);
     lib->cmdRegisterMdExit(cb_md_exit);
     lib->cmdRegisterMdAuthenResponse(cb_md_authen_response);
     lib->cmdRegisterMdAuthenResult(cb_md_authen_result);
@@ -750,9 +798,10 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             lib->cmdHUProtoclVersion(&version);
             log_line("sending protocol version %u.%u", version.majorVersion, version.minorVersion);
 
-            /* Disabled for now: see the head unit identity block above */
-            // send_statistic_info();
-            // send_hu_info();
+            /* Identity first: the phone authenticates the head unit from it and only
+             * then asks for the feature configuration */
+            send_statistic_info();
+            send_hu_info();
             break;
         }
         case CMD_VIDEO_ENCODER_INIT: {
@@ -1031,8 +1080,8 @@ static void usage(const char* program)
             "Usage: %s [options]\n"
             "\n"
             "  --socket <path>   Unix socket path (default %s)\n"
-            "  --channel <name>  vendor channel number (unused while identity reporting is off)\n"
-            "  --cuid <id>       head unit id (unused the same way)\n"
+            "  --channel <name>  vendor channel number reported to the phone (default 20000000)\n"
+            "  --cuid <id>       head unit id reported to the phone (default CarLifePort)\n"
             "  -q, --quiet       do not print this process's runtime logs\n"
             "  -v, --verbose     also emit the protocol stack's internal logs (discarded by default)\n"
             "  -h, --help        show this help\n"
