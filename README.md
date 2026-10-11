@@ -221,7 +221,7 @@ Siri 和夜间模式，按下表映射：
 
 | 前端消息 | CarLife 侧 |
 |---|---|
-| `touch` 的 contacts | 取 id 最小的那个触点，按按下状态映射 DOWN / MOVE / UP；空列表即 UP（CarLife 只支持单点） |
+| `touch` 的 contacts | 取 id 最小的那个触点，按按下状态映射 DOWN / MOVE / UP；空列表即 UP，坐标沿用最后位置（CarLife 只支持单点） |
 | `knob.select` / `home` / `back` | 硬按键 ok(0x14) / home(0x01) / back(0x0E) |
 | `knob.x` / `knob.y` 方向 | 硬按键 left / right / up / down |
 | `media` 3 / 4 / 5 | 硬按键 media(0x09) / next(0x06) / prev(0x07) |
@@ -229,6 +229,13 @@ Siri 和夜间模式，按下表映射：
 | `night` / `telephony` / `siri` | 丢弃：CarPlay 专属，CarLife 无对应 |
 | `ping` | 回 `{"type":"pong"}` |
 | 二进制帧（麦克风上行） | 丢弃：CarLife 的语音上行由手机发起 |
+
+前端的 contacts 只在手指按下期间存在：`pointerup` 把该触点从列表里直接删掉，而不是补发一条
+`down` 为假的记录（见 `input.ts` 的 `scheduleFlush`），所以抬手一定表现为「这个槽位在消息里
+消失了」。抬手事件本身不带坐标，只能沿用该槽位最后一次上报的位置。填原点等于告诉手机手指跳到了
+左上角，手机会把手势判为离开控件、取消这次按压，于是按钮按下与抬起的视觉都在、功能不生效。
+服务端因此记住每个触点最后发送的设备像素坐标，抬手时按原位置发 UP；拖动过的手指抬手也落在
+拖动后的位置。
 
 音频流名走 wire 传到前端直接作为音量滑块标签，所以用英文 `Media` / `Navigation`。
 

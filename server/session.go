@@ -92,6 +92,12 @@ type session struct {
 	fpsWindow  time.Time
 
 	touchDown bool
+	// Where the pointer was last reported, in device pixels. The client lists a finger only
+	// while it is down, so a lift arrives as an empty contact list; a release sent at the
+	// origin instead would report the finger jumping to the top left corner, and the phone
+	// cancels a press that leaves the control before it lifts.
+	touchX int32
+	touchY int32
 
 	audioSampleRate map[byte]int
 	audioChannels   map[byte]int
@@ -645,6 +651,7 @@ func (s *session) handleTouch(contacts []touchContact) {
 		width, height = s.requestedWidth, s.requestedHeight
 	}
 	wasDown := s.touchDown
+	lastX, lastY := s.touchX, s.touchY
 	s.mu.Unlock()
 
 	if width <= 0 || height <= 0 {
@@ -658,7 +665,11 @@ func (s *session) handleTouch(contacts []touchContact) {
 		s.mu.Lock()
 		s.touchDown = false
 		s.mu.Unlock()
-		if err := s.host.sendTouch(motionUp, 0, 0); err != nil {
+		// The lift carries no position of its own: the client drops the contact instead of
+		// sending one with down clear, so the release repeats the last one. Naming the origin
+		// here reads as the finger jumping to the top left corner, and the phone cancels a
+		// press that leaves the control before it lifts instead of completing it.
+		if err := s.host.sendTouch(motionUp, lastX, lastY); err != nil {
 			log.Printf("failed to send touch release: %v", err)
 		}
 		return
@@ -670,10 +681,6 @@ func (s *session) handleTouch(contacts []touchContact) {
 			contact = other
 		}
 	}
-
-	s.mu.Lock()
-	s.touchDown = true
-	s.mu.Unlock()
 
 	var action int32 = motionMove
 	if !wasDown {
@@ -688,6 +695,13 @@ func (s *session) handleTouch(contacts []touchContact) {
 	if y >= int32(height) {
 		y = int32(height) - 1
 	}
+
+	s.mu.Lock()
+	s.touchDown = true
+	s.touchX = x
+	s.touchY = y
+	s.mu.Unlock()
+
 	if err := s.host.sendTouch(action, x, y); err != nil {
 		log.Printf("failed to send touch: %v", err)
 	}
