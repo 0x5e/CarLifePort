@@ -151,6 +151,9 @@ func main() {
 			log.Fatalf("cannot prepare the TLS certificate: %v", err)
 		}
 		scheme = "https"
+		// Handshake failures go through ErrorLog. The no-prefix logger keeps the format the
+		// writer produces identically to the default one.
+		server.ErrorLog = log.New(&certificateAlertWriter{}, "", 0)
 	}
 
 	log.Printf("CarLife head unit service started")

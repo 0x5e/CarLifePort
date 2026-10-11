@@ -81,7 +81,11 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 服务默认走 **HTTPS**，用的是启动时自动生成的自签证书（缓存在用户缓存目录，网卡地址
 变了会自动重签）。之所以不能省掉 TLS：playport 前端用 WebCodecs 解码，而 WebCodecs
 只在安全上下文里可用，局域网 IP 走 http 时浏览器根本不给解码器，只有 localhost 例外。
-自签证书浏览器会报「不安全」，接受一次即可，本机自用不需要证书颁发机构。
+自签证书浏览器会报「不安全」，接受一次即可，本机自用不需要证书颁发机构。浏览器在弹警告页
+之前会先中止一次连接，服务端因此会有一行握手错误 —— 它已换成说明文字
+（`client refused the self-signed certificate ...`）而不是原始的 `tls: unknown certificate`，
+点过「继续访问」之后不再出现。此外网卡地址变化会导致重签证书，浏览器存下的例外随之失效，
+警告会再出现一次，属正常。
 
 地址里的 `token` 是 playport 前端要求的访问令牌，缺了它前端不会建立连接。
 首次打开后令牌会存在 localStorage，之后不带 `?token=` 直接访问也可以。

@@ -7,12 +7,44 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"log"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
+
+// certificateAlertWriter replaces the handshake errors the self-signed certificate causes
+// with the one action they call for. A browser aborts its first connection to a
+// certificate it does not trust, before it shows the warning page, so every fresh browser
+// session produces a handshake error line that reads like a fault. Repeats of that alert
+// are dropped rather than allowed to scroll the screen.
+type certificateAlertWriter struct {
+	once sync.Once
+}
+
+func (w *certificateAlertWriter) Write(p []byte) (int, error) {
+	line := strings.TrimSpace(string(p))
+	if !isCertificateAlert(line) {
+		log.Print(line)
+		return len(p), nil
+	}
+	w.once.Do(func() {
+		log.Print("client refused the self-signed certificate (this is what happens before its warning page; " +
+			"it is not a server fault: accept the warning once to continue, Chrome: Advanced -> Proceed)")
+	})
+	return len(p), nil
+}
+
+// isCertificateAlert reports whether a handshake error is the client rejecting our
+// certificate (alert 42/43/45/46/48) rather than a real protocol failure. Go formats every
+// TLS alert the same way, so the alert name is what tells them apart.
+func isCertificateAlert(line string) bool {
+	return strings.Contains(line, "remote error: tls:") && strings.Contains(line, "certificate")
+}
 
 const (
 	selfSignedCertFileName = "self-signed.crt"
