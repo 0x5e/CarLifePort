@@ -35,65 +35,60 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 
 ## 构建
 
-### 1. 原生依赖与车机协议栈
-
 ```sh
-./scripts/build-native.sh          # protobuf 2.5.0 + libcarlifevehicle.dylib → .build/
-make -C host                       # → host/carlife-host
-make -C tools/usb-bridge           # → tools/usb-bridge/carlife-usb-bridge
+./scripts/build.sh          # 全部构建；已存在的原生库自动跳过
+./scripts/build.sh --force  # 连原生库一起重建
 ```
 
-`build-native.sh` 会对 protobuf 2.5.0 打一个 3 行的补丁（补上 `__aarch64__` 分支，
-原版不认识 Apple Silicon），其余源文件原样编译。产物全部落在 `.build/`，不进入版本库。
+按顺序构建五段，产物均不进入版本库：
 
-### 2. 后端与前端
+| 步骤 | 产物 |
+|---|---|
+| 原生库（protobuf 2.5.0 + CarLife 协议栈） | `.build/lib/libcarlifevehicle.dylib` |
+| USB 桥接层 | `tools/usb-bridge/carlife-usb-bridge` |
+| 车机协议栈宿主 | `host/carlife-host` |
+| Go 后端 | `server/carlifed` |
+| 前端 | `web/dist/` |
 
-```sh
-cd server && go build -o carlifed .    # → server/carlifed
-cd web && npm install && npm run build # → web/dist
-```
+原生库要编译 protobuf 与 69 个 C++ 源文件，首次构建需数分钟；产物已存在时跳过。
+`build-native.sh` 会给 protobuf 2.5.0 打一个 3 行补丁（补上 `__aarch64__` 分支，
+原版不认识 Apple Silicon），其余源文件原样编译。
 
 ## 运行
 
-按顺序启动四个进程：
-
 ```sh
-# 1. 手机用数据线接上 Mac，先做三步清理
-#    a) 退出桌面版微信：它会自动对 Android 手机做 AOA 握手并独占整个 USB
-#       设备，此时 libusb claim 报 LIBUSB_ERROR_ACCESS，adb kill-server 无效。
-#    b) 清掉可能残留的 accessory 模式（这一步要 adb，会临时拉起 adb server）
-adb shell svc usb setFunctions
-#    c) 最后停掉 adb server，否则 AOA 握手时设备被 adb 占用
-adb kill-server
-
-# 2. USB 桥接
-./tools/usb-bridge/carlife-usb-bridge
-
-# 3. 车机协议栈宿主
-./host/carlife-host
-
-# 4. 后端（在仓库根目录运行，默认读 web/dist）
-./server/carlifed
-
-# 5. 浏览器打开 http://127.0.0.1:8080
+./scripts/run.sh
 ```
 
-手机端打开 CarLife App 并确认连接，画面会自动出现。
+脚本依次做三件事：检查桌面版微信是否在运行（它独占 USB 设备，检测到会直接中止并
+提示）→ 复位手机 USB 模式（清 accessory 残留、停掉 adb server）→ 启动
+`carlife-usb-bridge`、`carlife-host`、`carlifed`。
 
-启动顺序有依赖：`carlife-host` 会先等 `127.0.0.1:7200` 可连接，再调用
-`connectionSetup()`。在没有 `carlife-usb-bridge` 的情况下它停在等待阶段，
-不会监听自己的 socket，也不会发出任何状态帧。
+三个进程的日志带 `[bridge]` / `[host]` / `[server]` 前缀输出到同一终端；任一进程
+退出时其余进程一并停止，Ctrl-C 同样停止全部。
 
-### 常用参数
+然后浏览器打开 <http://127.0.0.1:8080>，手机端打开 CarLife App 并确认连接，画面
+自动出现。
+
+进程之间有启动顺序依赖，`run.sh` 已处理：`carlife-host` 会等 `127.0.0.1:7200`
+可连接后才调用 `connectionSetup()`，在此之前它不监听自己的 socket、也不发状态帧。
+手工单独启动时必须遵守这个顺序。
+
+### 单独运行某个组件
 
 ```sh
-carlife-usb-bridge --list               # 枚举当前 USB 设备
-carlife-host --socket /tmp/host.sock    # 换 socket 路径
-carlifed --addr 127.0.0.1:8080 \
-         --host-socket /tmp/host.sock \
-         --web web/dist \
-         --width 1280 --height 720 --fps 30
+tools/usb-bridge/carlife-usb-bridge --list   # 枚举 USB 设备，并显示挑中的是哪个
+tools/usb-bridge/carlife-usb-bridge          # 只跑桥接层
+host/carlife-host -v                         # 只跑宿主；默认静音，-v 保留库日志
+server/carlifed --addr 127.0.0.1:8080 \
+                --host-socket /tmp/carlife-host.sock \
+                --web web/dist \
+                --width 1280 --height 720 --fps 30
+cd web && npm run dev                        # 前端热更新，代理 /ws 与 /api 到 8080
 ```
+
+改前端代码时用 `npm run dev`（vite 开发服务器）。它把 `/ws` 与 `/api` 代理到
+8080，因此仍需另起 `carlifed`，不要用 `web/dist` 调试。
 
 ## 已知限制
 

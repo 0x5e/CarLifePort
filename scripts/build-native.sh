@@ -8,6 +8,14 @@
 #
 set -euo pipefail
 
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        --force) FORCE=1 ;;
+        *) echo "未知参数：$arg" >&2; exit 2 ;;
+    esac
+done
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$ROOT/.build"
 PB_SRC="$BUILD/protobuf-2.5.0"
@@ -67,6 +75,12 @@ fi
 echo "== protobuf 就绪：$PB_PREFIX/lib/libprotobuf.a"
 
 # ------------------------------------------------------- libcarlifevehicle
+if [ -f "$LIB_OUT/libcarlifevehicle.dylib" ] && [ "$FORCE" != 1 ]; then
+    echo "== libcarlifevehicle 已存在，跳过编译（--force 可强制重建）"
+    ls -lh "$LIB_OUT/libcarlifevehicle.dylib"
+    exit 0
+fi
+
 INCLUDES=(
     -I"$LIB_SRC/include"
     -I"$LIB_SRC/protobuf/cc/include"
