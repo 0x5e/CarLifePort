@@ -15,9 +15,7 @@ host/carlife-host
 host/*.o
 .build/
 
-# 前端
-web/node_modules/
-web/dist/
+# 前端（vendor/playport/web 原样构建，产物被子模块自身的 .gitignore 忽略）
 
 # Go
 server/carlifed

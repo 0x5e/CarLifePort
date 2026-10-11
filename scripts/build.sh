@@ -24,16 +24,19 @@ make -C host
 step "4/5 Go backend"
 (cd server && go build -o carlifed .)
 
-step "5/5 web frontend"
-if [ ! -d web/node_modules ]; then
+step "5/5 web frontend (vendor/playport, built unmodified)"
+CLIENT="vendor/playport/web"
+if [ ! -d "$CLIENT/node_modules" ]; then
     echo "first build, installing web dependencies..."
-    (cd web && npm install)
+    # --no-package-lock keeps the submodule pristine: npm would otherwise rewrite
+    # vendor/playport/web/package-lock.json.
+    (cd "$CLIENT" && npm install --no-package-lock)
 fi
-(cd web && npm run build)
+(cd "$CLIENT" && npm run build)
 
 printf '\n\033[1;32mbuild complete\033[0m\n'
 printf '  bridge   %s\n' "tools/usb-bridge/carlife-usb-bridge"
 printf '  host     %s\n' "host/carlife-host"
 printf '  backend  %s\n' "server/carlifed"
-printf '  web      %s\n' "web/dist"
+printf '  web      %s\n' "$CLIENT/dist"
 printf '\nrun ./scripts/run.sh to start everything\n'
