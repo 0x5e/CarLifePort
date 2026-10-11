@@ -21,15 +21,10 @@ cd "$ROOT"
 BRIDGE="tools/usb-bridge/carlife-usb-bridge"
 HOST="host/carlife-host"
 SERVER="server/carlifed"
-TOKEN="carlife"
 WEB="vendor/playport/web/dist"
-# Frame rate requested from the phone. The phone reports the rate it accepted in the log
-# ("phone limited the frame rate to 30"); lower this if 60 is not accepted.
-FPS="${FPS:-60}"
-# HTTP listen address. The default is reachable from other machines on the LAN; carlifed
-# prints one viewer URL per interface, the way vite does. Set it to 127.0.0.1:8080 to keep
-# the page on this machine only.
-ADDR="${ADDR:-0.0.0.0:8080}"
+# The listen address, the requested frame rate and the access token are not passed to
+# carlifed here: it reads ADDR, FPS and TOKEN from the environment and carries its own
+# defaults, so this script does not have to restate them. See server/main.go.
 # Head unit identity reporting (statistic info / hu info) is disabled for now, so the
 # vendor channel number is not passed either. See README.
 # CHANNEL="${CHANNEL:-}"
@@ -89,12 +84,12 @@ start() {
     printf '== started %-7s pid %s\n' "$name" "$LAST_PID"
 }
 
-cat <<EOF
+cat <<'EOF'
 
-== open one of the viewer URLs printed by carlifed below (https, token: $TOKEN)
+== open one of the viewer URLs printed by carlifed below; it carries the access token
 == the certificate is self-signed: accept the browser warning once
-== listening on $ADDR; local machine only: ADDR=127.0.0.1:8080 ./scripts/run.sh
-== requesting video at $FPS fps (override with FPS=30 ./scripts/run.sh)
+== carlifed reads ADDR, FPS and TOKEN from the environment, for example
+==   ADDR=127.0.0.1:8080 FPS=30 ./scripts/run.sh
 == open the CarLife app on the phone and confirm the connection
 == the phone may be plugged in before or after this script starts
 == unplugging and replugging the phone rebuilds the link automatically
@@ -102,7 +97,7 @@ cat <<EOF
 
 EOF
 
-start server "$SERVER" --token "$TOKEN" --fps "$FPS" --addr "$ADDR"
+start server "$SERVER"
 server_pid=$LAST_PID
 PIDS=("$server_pid")
 

@@ -1,6 +1,6 @@
 # carlife-host -- host process for the CarLife head-unit-side protocol stack
 #
-# Depends on libcarlifevehicle.dylib produced by scripts/build-native.sh,
+# Depends on libcarlifevehicle.dylib produced by scripts/build.sh --native,
 # and triggers a build automatically if it is not present yet.
 
 ROOT       := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
@@ -25,7 +25,7 @@ $(TARGET): $(SOURCES) $(HEADERS) native
 	@echo "Build complete: $@"
 
 native $(LIBDIR)/libcarlifevehicle.dylib:
-	@test -f $(LIBDIR)/libcarlifevehicle.dylib || $(ROOT)/scripts/build-native.sh
+	@test -f $(LIBDIR)/libcarlifevehicle.dylib || $(ROOT)/scripts/build.sh --native
 
 clean:
 	rm -f $(TARGET)

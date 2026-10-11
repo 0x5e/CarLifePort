@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -80,15 +81,49 @@ func interfaceAddresses() []listenAddress {
 	return addresses
 }
 
+// envString returns the value of the environment variable name, or fallback when it is
+// unset or empty.
+func envString(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// envInt returns the value of the environment variable name parsed as an integer, or
+// fallback when it is unset or empty. A value that is present but not a number aborts:
+// silently falling back would turn a typo into an unnoticed wrong frame rate.
+func envInt(name string, fallback int) int {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Fatalf("%s=%q is not an integer", name, value)
+	}
+	return parsed
+}
+
 func main() {
-	addr := flag.String("addr", "0.0.0.0:8080", "HTTP listen address")
+	// These three are read from the environment instead of the command line, so that
+	// run.sh does not have to restate their defaults and a bare carlifed run behaves
+	// the same as the scripted one.
+	// HTTP listen address: the default is reachable from other machines on the LAN, and
+	// one viewer URL per interface is printed the way vite does. 127.0.0.1:8080 keeps
+	// the page on this machine only.
+	addr := envString("ADDR", "0.0.0.0:8080")
+	// Access token the browser client must present.
+	token := envString("TOKEN", "0")
+	// Requested frame rate; the phone may cap it and reports the rate it accepted in the
+	// log, so lower this if 60 is not accepted.
+	fps := envInt("FPS", 60)
+
 	hostSocket := flag.String("host-socket", "/tmp/carlife-host.sock", "Unix socket path of carlife-host")
 	webDir := flag.String("web", defaultWebDir, "static web asset directory")
-	token := flag.String("token", "carlife", "access token the browser client must present")
 	deviceName := flag.String("device-name", "CarLife", "head unit name shown in the web client")
 	width := flag.Int("width", 1280, "requested phone video width")
 	height := flag.Int("height", 720, "requested phone video height")
-	fps := flag.Int("fps", 60, "requested phone video frame rate (the phone may cap it; the accepted value is logged)")
 	useTLS := flag.Bool("tls", true, "serve HTTPS with a self-signed certificate; plain http only works on localhost because the browser client needs a secure context")
 	flag.Parse()
 
@@ -100,12 +135,12 @@ func main() {
 
 	var sess *session
 
-	display := newDisplayState(*width, *height, *fps, func(width, height, fps int) error {
+	display := newDisplayState(*width, *height, fps, func(width, height, fps int) error {
 		return sess.changeDisplay(width, height, fps)
 	})
-	hub := newHub(*token, *deviceName, display)
+	hub := newHub(token, *deviceName, display)
 	host := newHostClient(*hostSocket)
-	sess = newSession(host, hub, *width, *height, *fps)
+	sess = newSession(host, hub, *width, *height, fps)
 	hub.session = sess
 
 	host.onEvent = sess.onHostEvent
@@ -134,7 +169,7 @@ func main() {
 	go host.run(ctx)
 	go sess.sessionWatchdog(ctx)
 
-	server := &http.Server{Addr: *addr, Handler: hub.Routes(*webDir)}
+	server := &http.Server{Addr: addr, Handler: hub.Routes(*webDir)}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -157,7 +192,7 @@ func main() {
 	}
 
 	log.Printf("CarLife head unit service started")
-	for _, entry := range viewerURLs(*addr, *token, scheme) {
+	for _, entry := range viewerURLs(addr, token, scheme) {
 		log.Printf("  viewer URL   %s", entry)
 	}
 	if *useTLS {

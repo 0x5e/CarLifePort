@@ -41,6 +41,7 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 ```sh
 ./scripts/build.sh          # 全部构建；已存在的原生库自动跳过
 ./scripts/build.sh --force  # 连原生库一起重建
+./scripts/build.sh --native # 只构建原生库（host/Makefile 内部调用）
 ```
 
 按顺序构建五段，产物均不进入版本库：
@@ -54,7 +55,7 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 | 前端（playport 原样构建） | `vendor/playport/web/dist/` |
 
 原生库要编译 protobuf 与 69 个 C++ 源文件，首次构建需数分钟；产物已存在时跳过。
-`build-native.sh` 会给 protobuf 2.5.0 打一个 3 行补丁（补上 `__aarch64__` 分支，
+`build.sh` 会给 protobuf 2.5.0 打一个 3 行补丁（补上 `__aarch64__` 分支，
 原版不认识 Apple Silicon），其余源文件原样编译。
 
 ## 运行
@@ -73,8 +74,8 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 一样把每张网卡的地址都打出来（带网卡名）：
 
 ```
-  viewer URL   https://127.0.0.1:8080/?token=carlife
-  viewer URL   https://192.168.40.2:8080/?token=carlife (en0)
+  viewer URL   https://127.0.0.1:8080/?token=0
+  viewer URL   https://192.168.40.2:8080/?token=0 (en0)
   certificate  .../self-signed.crt (self-signed: accept the browser warning once)
 ```
 
@@ -89,20 +90,35 @@ localhost 例外。自签证书浏览器会报「不安全」，接受一次即�
 要一次警告 —— 与 playport 行为一致。
 
 地址里的 `token` 是 playport 前端要求的访问令牌，缺了它前端不会建立连接。
-首次打开后令牌会存在 localStorage，之后不带 `?token=` 直接访问也可以。
+首次打开后令牌会存在 localStorage，之后不带 `?token=` 直接访问也可以；但令牌变了以后
+localStorage 里还是旧值，需要用带新 `?token=` 的地址再打开一次。
+
+### 服务端配置（环境变量）
+
+监听地址、请求帧率与访问令牌由环境变量控制，不再是命令行参数；默认值就在 `server/main.go` 里，
+`run.sh` 不重复声明。三者对 `./scripts/run.sh` 与直接运行 `server/carlifed` 都生效：
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `ADDR` | `0.0.0.0:8080` | HTTP 监听地址 |
+| `FPS` | `60` | 请求手机用的帧率（手机可能上限更低，见后文） |
+| `TOKEN` | `0` | 浏览器访问令牌 |
+
+其余选项（`--host-socket` / `--web` / `--device-name` / `--width` / `--height` / `--tls`）
+仍是命令行参数，`carlifed -h` 可查。
 
 默认对外可访问（局域网内其它机器也能打开这个页面，上面就是手机画面和控制通道，
 保护只有这一层 token）。要限制成本机访问：
 
 ```sh
-ADDR=127.0.0.1:8080 ./scripts/run.sh      # 或 carlifed --addr 127.0.0.1:8080
+ADDR=127.0.0.1:8080 ./scripts/run.sh      # 或 ADDR=127.0.0.1:8080 server/carlifed
 ```
 
 只在本机用、又不想看证书告警时，可以退回明文 http（仅 localhost 有安全上下文，
 所以只有本机能用）：
 
 ```sh
-server/carlifed --addr 127.0.0.1:8080 --tls=false
+ADDR=127.0.0.1:8080 server/carlifed --tls=false
 ```
 
 ### 手机什么时候插都行
@@ -134,14 +150,15 @@ server/carlifed --addr 127.0.0.1:8080 --tls=false
 tools/usb-bridge/carlife-usb-bridge --list   # 枚举 USB 设备，并显示挑中的是哪个
 tools/usb-bridge/carlife-usb-bridge          # 只跑桥接层
 host/carlife-host -v                         # 只跑宿主；默认静音，-v 保留库日志
-server/carlifed --addr 127.0.0.1:8080 \
-                --host-socket /tmp/carlife-host.sock \
+server/carlifed --host-socket /tmp/carlife-host.sock \
                 --web vendor/playport/web/dist \
-                --token carlife \
-                --width 1280 --height 720 --fps 60
+                --width 1280 --height 720
 ```
 
-`run.sh` 里帧率默认 60，可用环境变量覆盖：`FPS=30 ./scripts/run.sh`。实际帧率由手机
+上面这条 `carlifed` 用的是默认的 `ADDR` / `FPS` / `TOKEN`；要改就加前缀，例如
+`ADDR=127.0.0.1:8080 server/carlifed ...`。
+
+帧率默认 60，用环境变量覆盖：`FPS=30 ./scripts/run.sh`。实际帧率由手机
 决定，后端每 5 秒打印一行实测值（`video: 29.8 fps received ...`），手机把帧率压低时也
 会打印（`phone limited the frame rate to 30`）。
 
