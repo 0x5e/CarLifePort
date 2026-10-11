@@ -26,6 +26,9 @@ WEB="vendor/playport/web/dist"
 # Frame rate requested from the phone. The phone reports the rate it accepted in the log
 # ("phone limited the frame rate to 30"); lower this if 60 is not accepted.
 FPS="${FPS:-60}"
+# HTTP listen address. Bind 0.0.0.0 to reach the page from another machine; carlifed then
+# prints one viewer URL per interface, the way vite does.
+ADDR="${ADDR:-127.0.0.1:8080}"
 
 # ---------------------------------------------------------------- prechecks
 for f in "$BRIDGE" "$HOST" "$SERVER"; do
@@ -84,7 +87,8 @@ start() {
 
 cat <<EOF
 
-== open http://127.0.0.1:8080/?token=$TOKEN in a browser
+== open one of the viewer URLs printed by carlifed below (token: $TOKEN)
+== listening on $ADDR; from another machine: ADDR=0.0.0.0:8080 ./scripts/run.sh
 == requesting video at $FPS fps (override with FPS=30 ./scripts/run.sh)
 == open the CarLife app on the phone and confirm the connection
 == the phone may be plugged in before or after this script starts
@@ -93,7 +97,7 @@ cat <<EOF
 
 EOF
 
-start server "$SERVER" --token "$TOKEN" --fps "$FPS"
+start server "$SERVER" --token "$TOKEN" --fps "$FPS" --addr "$ADDR"
 server_pid=$LAST_PID
 PIDS=("$server_pid")
 

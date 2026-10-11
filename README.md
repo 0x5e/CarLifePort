@@ -73,6 +73,16 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 地址里的 `token` 是 playport 前端要求的访问令牌，缺了它前端不会建立连接。
 首次打开后令牌会存在 localStorage，之后直接访问 <http://127.0.0.1:8080> 也可以。
 
+监听地址绑到通配地址时会像 vite 一样把每张网卡的地址都打出来（带网卡名）：
+
+```sh
+ADDR=0.0.0.0:8080 ./scripts/run.sh        # 或 carlifed --addr 0.0.0.0:8080
+#   viewer URL   http://127.0.0.1:8080/?token=carlife
+#   viewer URL   http://192.168.40.2:8080/?token=carlife (en0)
+```
+
+只绑 127.0.0.1 时只有本地那一条，因为其它地址本来就访问不到。
+
 ### 手机什么时候插都行
 
 | 时机 | 行为 |
