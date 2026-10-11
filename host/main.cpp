@@ -52,7 +52,9 @@ static int g_verbose = 0;
 /* Identity reported to the phone during the handshake. The channel number is the one
  * Baidu issues to a head unit vendor after a front-fit project is approved; the open
  * source vehicle library has none, so this is a placeholder that can be overridden
- * with --channel once a real value is available. See README ("Authentication"). */
+ * with --channel once a real value is available. See README ("Head unit identity").
+ *
+ * Both are unused at the moment because the identity reporting is disabled below. */
 static std::string g_channel = "CarLife";
 static std::string g_cuid = "CarLifePort";
 
@@ -403,7 +405,13 @@ static void cb_navi_next_turn(S_NAVI_NEXT_TURN_INFO* info)
  * The library's bundled test program sends neither. Statistics info carries the vendor
  * channel number, which is what the phone checks before it treats the head unit as
  * authenticated, so an unreported identity is a plausible cause of the "unauthenticated
- * head unit" warning. */
+ * head unit" warning.
+ *
+ * Disabled for now. Sending the two messages did not stop the phone from warning about
+ * an unauthenticated head unit, so the handshake is being narrowed down by elimination:
+ * the authentication exchange is off and so is this. Kept ready for when a real vendor
+ * channel number is available. */
+#if 0
 static unsigned int g_connect_count = 0;
 
 static void send_statistic_info(void)
@@ -465,6 +473,7 @@ static void send_hu_info(void)
     log_line("sent head unit info (model=%s, host=%s, release=%s)", info.model.c_str(),
              info.host.c_str(), info.release.c_str());
 }
+#endif
 
 /* ------------------------------------------------------- Head unit authentication
  *
@@ -741,9 +750,9 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             lib->cmdHUProtoclVersion(&version);
             log_line("sending protocol version %u.%u", version.majorVersion, version.minorVersion);
 
-            /* Identify ourselves before anything else is negotiated */
-            send_statistic_info();
-            send_hu_info();
+            /* Disabled for now: see the head unit identity block above */
+            // send_statistic_info();
+            // send_hu_info();
             break;
         }
         case CMD_VIDEO_ENCODER_INIT: {
@@ -1022,8 +1031,8 @@ static void usage(const char* program)
             "Usage: %s [options]\n"
             "\n"
             "  --socket <path>   Unix socket path (default %s)\n"
-            "  --channel <name>  vendor channel number reported to the phone (default CarLife)\n"
-            "  --cuid <id>       head unit id reported to the phone (default CarLifePort)\n"
+            "  --channel <name>  vendor channel number (unused while identity reporting is off)\n"
+            "  --cuid <id>       head unit id (unused the same way)\n"
             "  -q, --quiet       do not print this process's runtime logs\n"
             "  -v, --verbose     also emit the protocol stack's internal logs (discarded by default)\n"
             "  -h, --help        show this help\n"
