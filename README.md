@@ -78,14 +78,15 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
   certificate  .../self-signed.crt (self-signed: accept the browser warning once)
 ```
 
-服务默认走 **HTTPS**，用的是启动时自动生成的自签证书（缓存在用户缓存目录，网卡地址
-变了会自动重签）。之所以不能省掉 TLS：playport 前端用 WebCodecs 解码，而 WebCodecs
-只在安全上下文里可用，局域网 IP 走 http 时浏览器根本不给解码器，只有 localhost 例外。
-自签证书浏览器会报「不安全」，接受一次即可，本机自用不需要证书颁发机构。浏览器在弹警告页
-之前会先中止一次连接，服务端因此会有一行握手错误 —— 它已换成说明文字
-（`client refused the self-signed certificate ...`）而不是原始的 `tls: unknown certificate`，
-点过「继续访问」之后不再出现。此外网卡地址变化会导致重签证书，浏览器存下的例外随之失效，
-警告会再出现一次，属正常。
+服务默认走 **HTTPS**，用的是启动时自动生成的自签证书（缓存在用户缓存目录，**生成一次
+之后一直复用**，与 playport 一致）。之所以不能省掉 TLS：playport 前端用 WebCodecs 解码，
+而 WebCodecs 只在安全上下文里可用，局域网 IP 走 http 时浏览器根本不给解码器，只有
+localhost 例外。自签证书浏览器会报「不安全」，接受一次即可，本机自用不需要证书颁发机构。
+
+浏览器在弹警告页之前会先中止一次连接，服务端会收到一个 `unknown_ca` 告警。这类握手错误
+**不打印**（playport 也不打印，启动时那句提示已经说明要接受一次警告）；其它握手错误照常
+打印。注意证书是按生成时的网卡地址签的，之后换网络导致某个地址不在证书里时，浏览器会再
+要一次警告 —— 与 playport 行为一致。
 
 地址里的 `token` 是 playport 前端要求的访问令牌，缺了它前端不会建立连接。
 首次打开后令牌会存在 localStorage，之后不带 `?token=` 直接访问也可以。

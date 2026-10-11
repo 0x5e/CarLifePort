@@ -13,35 +13,27 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
-// certificateAlertWriter replaces the handshake errors the self-signed certificate causes
-// with the one action they call for. A browser aborts its first connection to a
-// certificate it does not trust, before it shows the warning page, so every fresh browser
-// session produces a handshake error line that reads like a fault. Repeats of that alert
-// are dropped rather than allowed to scroll the screen.
-type certificateAlertWriter struct {
-	once sync.Once
-}
+// certificateAlertWriter drops the handshake errors the self-signed certificate causes.
+//
+// A browser aborts its first connection to a certificate it does not trust, before it shows
+// the warning page, so every fresh browser profile produces one. playport reports nothing
+// for these either: the startup line already says the warning has to be accepted once, and
+// a repeated line reads like a failure. Every other handshake error is still reported.
+type certificateAlertWriter struct{}
 
-func (w *certificateAlertWriter) Write(p []byte) (int, error) {
+func (certificateAlertWriter) Write(p []byte) (int, error) {
 	line := strings.TrimSpace(string(p))
 	if !isCertificateAlert(line) {
 		log.Print(line)
-		return len(p), nil
 	}
-	w.once.Do(func() {
-		log.Print("client refused the self-signed certificate (this is what happens before its warning page; " +
-			"it is not a server fault: accept the warning once to continue, Chrome: Advanced -> Proceed)")
-	})
 	return len(p), nil
 }
 
 // isCertificateAlert reports whether a handshake error is the client rejecting our
-// certificate (alert 42/43/45/46/48) rather than a real protocol failure. Go formats every
-// TLS alert the same way, so the alert name is what tells them apart.
+// certificate (alert 42/43/45/46/48) rather than a real protocol failure.
 func isCertificateAlert(line string) bool {
 	return strings.Contains(line, "remote error: tls:") && strings.Contains(line, "certificate")
 }
@@ -68,6 +60,10 @@ func certificateDir() string {
 // gets a decoder in a secure context, and WebCodecs is unavailable over plain http
 // everywhere except localhost. No certificate authority is involved, which is all this
 // local page needs.
+//
+// It is created once and then reused, the way playport does it. Issuing a new one whenever
+// an interface appears or disappears would invalidate the exception the browser stored, so
+// the warning would come back for no reason.
 func selfSignedCertificate(dir string) (string, string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", "", err
@@ -75,18 +71,17 @@ func selfSignedCertificate(dir string) (string, string, error) {
 	certPath := filepath.Join(dir, selfSignedCertFileName)
 	keyPath := filepath.Join(dir, selfSignedKeyFileName)
 
-	hosts := certificateHosts()
-	if certificateCovers(certPath, hosts) {
+	if certificateUsable(certPath) {
 		return certPath, keyPath, nil
 	}
-	if err := writeSelfSignedCertificate(certPath, keyPath, hosts); err != nil {
+	if err := writeSelfSignedCertificate(certPath, keyPath, certificateHosts()); err != nil {
 		return "", "", err
 	}
 	return certPath, keyPath, nil
 }
 
-// certificateHosts lists the names the certificate must be valid for: the loopback names
-// plus every interface address a viewer URL is printed for.
+// certificateHosts lists the names the certificate is written for: the loopback names plus
+// every interface address a viewer URL is printed for.
 func certificateHosts() []string {
 	hosts := []string{"localhost", "127.0.0.1", "::1"}
 	for _, entry := range interfaceAddresses() {
@@ -95,10 +90,11 @@ func certificateHosts() []string {
 	return hosts
 }
 
-// certificateCovers reports whether the cached certificate is still usable: it must not be
-// close to expiring and must be valid for every host. A machine that joins a different
-// network therefore gets a fresh certificate instead of an address mismatch.
-func certificateCovers(certPath string, hosts []string) bool {
+// certificateUsable reports whether the cached certificate can still be served: it must
+// parse and must not be about to expire. The addresses it covers are not re-checked, so
+// joining a different network does not replace it; connecting through an address it does
+// not list asks for the browser warning again, which is the same one-time click.
+func certificateUsable(certPath string) bool {
 	raw, err := os.ReadFile(certPath)
 	if err != nil {
 		return false
@@ -111,15 +107,7 @@ func certificateCovers(certPath string, hosts []string) bool {
 	if err != nil {
 		return false
 	}
-	if time.Now().Add(24 * time.Hour).After(cert.NotAfter) {
-		return false
-	}
-	for _, host := range hosts {
-		if cert.VerifyHostname(host) != nil {
-			return false
-		}
-	}
-	return true
+	return time.Now().Add(24 * time.Hour).Before(cert.NotAfter)
 }
 
 func writeSelfSignedCertificate(certPath, keyPath string, hosts []string) error {
