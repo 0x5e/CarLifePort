@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -339,11 +340,75 @@ func (s *session) onCommandEvent(event hostEvent) {
 		log.Printf("replied to phone feature config request")
 
 	case evModuleStatus:
-		log.Printf("phone module status: %s", string(event.payload))
+		log.Printf("phone module status: %s", describeModuleStatus(event.payload))
 
 	case evLog:
 		log.Printf("carlife-host: %s", string(event.payload))
 	}
+}
+
+// describeModuleStatus renders the module status the phone reports. The raw form is a JSON
+// list of {moduleID, statusID} pairs whose meaning is only in the module id names, and one
+// entry decides whether audio can arrive at all: module 3 (music) reports "running" only
+// while the phone is streaming program audio, so an idle music module means the phone has
+// nothing to play and no audio channel traffic is expected.
+func describeModuleStatus(payload []byte) string {
+	var entries []struct {
+		ModuleID int `json:"moduleID"`
+		StatusID int `json:"statusID"`
+	}
+	if err := json.Unmarshal(payload, &entries); err != nil {
+		return string(payload)
+	}
+	parts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		parts = append(parts, moduleName(entry.ModuleID)+"="+moduleStatusName(entry.ModuleID, entry.StatusID))
+	}
+	return strings.Join(parts, " ")
+}
+
+// Module ids and status ids come from ModuleStatusModel.java in the CarLife vehicle library.
+func moduleName(moduleID int) string {
+	switch moduleID {
+	case 1:
+		return "phone"
+	case 2:
+		return "navi"
+	case 3:
+		return "music"
+	case 4:
+		return "voice"
+	case 5:
+		return "connect"
+	case 6:
+		return "mic"
+	}
+	return fmt.Sprintf("module%d", moduleID)
+}
+
+func moduleStatusName(moduleID, statusID int) string {
+	switch moduleID {
+	case 1: // phone
+		return statusName(statusID, "idle", "incoming", "outgoing")
+	case 2: // navi
+		return statusName(statusID, "idle", "start", "stop")
+	case 3: // music
+		return statusName(statusID, "idle", "running")
+	case 4: // voice
+		return statusName(statusID, "idle", "running", "mic-unsupported")
+	case 6: // mic
+		return statusName(statusID, "vehicle-mic", "phone-mic", "unsupported")
+	}
+	return strconv.Itoa(statusID)
+}
+
+// statusName picks the name for a status id, falling back to the number when the phone
+// reports one this build does not know.
+func statusName(statusID int, names ...string) string {
+	if statusID >= 0 && statusID < len(names) {
+		return names[statusID]
+	}
+	return strconv.Itoa(statusID)
 }
 
 func (s *session) applyDeviceInfo(payload []byte) {
