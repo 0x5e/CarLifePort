@@ -12,9 +12,11 @@
  * xxxReceiveOperation().
  */
 #include "CCarLifeLibWrapper.h"
+#include "CConnectManager.h"
 #include "protocol.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
@@ -119,6 +121,17 @@ static std::string json_quote(const std::string& value)
 
 /* ---------------------------------------------------------- Socket output */
 
+/* Children must never inherit our descriptors. The library runs commands through
+ * popen(), and an inherited listener keeps the socket alive after this process exits,
+ * which leaves the Go backend connected to a socket nobody accepts on. */
+static void set_close_on_exec(int fd)
+{
+    int flags = ::fcntl(fd, F_GETFD);
+    if (flags >= 0) {
+        ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    }
+}
+
 static int write_all(int fd, const uint8_t* data, size_t len)
 {
     size_t offset = 0;
@@ -172,10 +185,13 @@ static void broadcast_status(void)
 
 /* Wait for usb-bridge to start listening on the command channel port. The
  * probe connection is closed immediately; the bridge accepts again and the
- * real channel is not occupied. */
+ * real channel is not occupied.
+ * timeout_seconds <= 0 waits forever: the bridge now waits for the phone to be
+ * plugged in, so a fixed timeout would make this process give up while the
+ * phone is still being plugged in. */
 static int wait_for_bridge(int port, int timeout_seconds)
 {
-    for (int elapsed = 0; elapsed < timeout_seconds; ++elapsed) {
+    for (int elapsed = 0;; ++elapsed) {
         int fd = ::socket(AF_INET, SOCK_STREAM, 0);
         if (fd >= 0) {
             struct sockaddr_in address;
@@ -189,12 +205,14 @@ static int wait_for_bridge(int port, int timeout_seconds)
                 return 1;
             }
         }
+        if (timeout_seconds > 0 && elapsed >= timeout_seconds) {
+            return 0;
+        }
         if (elapsed % 5 == 0) {
             log_line("waiting for usb-bridge to become ready on 127.0.0.1:%d...", port);
         }
         sleep(1);
     }
-    return 0;
 }
 
 /* --------------------------------------------- Command channel callbacks (phone -> head unit) */
@@ -790,6 +808,7 @@ static int listen_unix(const char* path)
         log_line("failed to create socket: %s", strerror(errno));
         return -1;
     }
+    set_close_on_exec(fd);
     struct sockaddr_un address;
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
@@ -815,6 +834,43 @@ static void start_thread(void* (*entry)(void*), const char* name)
         return;
     }
     pthread_detach(thread);
+}
+
+/* Open the six channel sockets towards the local ports that tools/usb-bridge listens on.
+ *
+ * This is what CCarLifeLib::connectionSetup() does minus its first step, which runs six
+ * `adb forward` commands. Skipping that step is deliberate:
+ *   1. This head unit does not use adb -- the bridge owns the USB link and listens on the
+ *      127.0.0.1 ports below. Running `adb forward` restarts the adb server, and a running
+ *      adb server holds the phone, so the bridge's next USB claim fails with
+ *      LIBUSB_ERROR_ACCESS (this is the `adb kill-server` requirement, reintroduced by the
+ *      library itself).
+ *   2. popen() gives the adb child every descriptor this process has open, the listening
+ *      socket included.
+ * Nothing else in connectionSetup() is lost: it only forwards and then calls these six
+ * create methods. */
+static int setup_channels(void)
+{
+    CConnectManager* manager = CConnectManager::getInstance();
+    if (!manager->createCmdSocket()) {
+        return -1;
+    }
+    if (!manager->createVideoSocket()) {
+        return -1;
+    }
+    if (!manager->createMediaSocket()) {
+        return -1;
+    }
+    if (!manager->createTTSSocket()) {
+        return -1;
+    }
+    if (!manager->createVRSocket()) {
+        return -1;
+    }
+    if (!manager->createTouchSocket()) {
+        return -1;
+    }
+    return 0;
 }
 
 static void usage(const char* program)
@@ -868,7 +924,9 @@ int main(int argc, char** argv)
     }
     log_line("listening on %s", socket_path);
 
-    if (!wait_for_bridge(CL_BRIDGE_PORT, 120)) {
+    /* The bridge opens its listeners only once a phone is attached, so wait without a
+     * deadline: the phone may be plugged in after this process has started. */
+    if (!wait_for_bridge(CL_BRIDGE_PORT, 0)) {
         log_line("timed out waiting for usb-bridge (127.0.0.1:%d). Start tools/usb-bridge before running this process.",
                  CL_BRIDGE_PORT);
         return 1;
@@ -879,7 +937,7 @@ int main(int argc, char** argv)
     lib->carLifeLibInit();
 
     for (int attempt = 1; attempt <= 3; ++attempt) {
-        g_connection_result = lib->connectionSetup();
+        g_connection_result = setup_channels();
         if (g_connection_result == 0) {
             break;
         }
@@ -912,6 +970,7 @@ int main(int argc, char** argv)
             log_line("accept failed: %s", strerror(errno));
             break;
         }
+        set_close_on_exec(fd);
 
         pthread_mutex_lock(&g_send_lock);
         if (g_client_fd >= 0) {

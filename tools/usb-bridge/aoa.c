@@ -134,10 +134,14 @@ static const char *tag_for(const struct libusb_device_descriptor *d, const struc
     if (looks_like_phone(n)) {
         return "candidate: likely Android phone";
     }
-    return "candidate: other device (not a phone?)";
+    return "skip: not recognised as a phone";
 }
 
-/* Auto-pick score: 0 = not a candidate, 1 = weak candidate, 2 = likely phone, 3 = already accessory */
+/* Auto-pick score: 0 = not a candidate, 2 = likely phone, 3 = already accessory.
+ * Anything that is neither an accessory nor recognisable as a phone scores 0 and is never
+ * picked automatically -- hubs, keyboards, network adapters and the like would otherwise be
+ * claimed while the phone is not plugged in yet, and the failed claim would abort startup.
+ * A phone whose vendor string is not recognised can still be selected with --vid/--pid. */
 static int score_for(const struct libusb_device_descriptor *d, const struct devnames *n)
 {
     if (is_accessory_pid(d->idVendor, d->idProduct)) {
@@ -149,7 +153,7 @@ static int score_for(const struct libusb_device_descriptor *d, const struct devn
     if (d->bDeviceClass == 0x03 || d->bDeviceClass == 0x08 || d->bDeviceClass == 0x09) {
         return 0;
     }
-    return looks_like_phone(n) ? 2 : 1;
+    return looks_like_phone(n) ? 2 : 0;
 }
 
 /* ------------------------------------------------------------------ init */

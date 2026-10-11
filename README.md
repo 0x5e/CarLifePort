@@ -64,15 +64,32 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 提示）→ 复位手机 USB 模式（清 accessory 残留、停掉 adb server）→ 启动
 `carlife-usb-bridge`、`carlife-host`、`carlifed`。
 
-三个进程的日志带 `[bridge]` / `[host]` / `[server]` 前缀输出到同一终端；任一进程
-退出时其余进程一并停止，Ctrl-C 同样停止全部。
+三个进程的日志带 `[bridge]` / `[host]` / `[server]` 前缀输出到同一终端，Ctrl-C 停止全部。
 
-然后浏览器打开 <http://127.0.0.1:8080>，手机端打开 CarLife App 并确认连接，画面
-自动出现。
+然后浏览器打开 <http://127.0.0.1:8080>。
 
-进程之间有启动顺序依赖，`run.sh` 已处理：`carlife-host` 会等 `127.0.0.1:7200`
-可连接后才调用 `connectionSetup()`，在此之前它不监听自己的 socket、也不发状态帧。
-手工单独启动时必须遵守这个顺序。
+### 手机什么时候插都行
+
+| 时机 | 行为 |
+|---|---|
+| 启动前已插好 | 桥接层直接握手（accessory 残留已清），走完整 51/52/53 |
+| 启动后再插 | 桥接层轮询等待设备，插上即握手；宿主一直等 `127.0.0.1:7200`，不会超时退出 |
+| 运行中重新插拔 | 桥接层退出 → `run.sh` 重建 bridge 与 host → 重新握手出新会话 |
+
+三种情况下浏览器都不用刷新：`carlifed` 常驻，WebSocket 断开后自动重连；会话重建后
+前端会拿到新的编解码参数并重建解码器。
+
+重新插拔之所以要重建进程而不是原地重连：CarLifeVehicleLib 只在 `connectionSetup()`
+里建立六条通道，而 `createCmdSocket()` 是直接覆盖指针、不关闭旧 socket，同一进程内
+重复调用会留下悬空 fd 和阻塞在旧 fd 上的接收线程；手机侧每次 accessory 附着也都是
+一个新会话。
+
+`carlife-host` 因此不调用 `CCarLifeLib::connectionSetup()`，改为直接调
+`CConnectManager::createXSocket()` 系列。`connectionSetup()` 会先跑六条
+`adb forward`，而本项目不用 adb（USB 归桥接层管），这两点都有实际危害：adb server
+会被重新拉起并占住手机，使桥接层下次 claim 报 `LIBUSB_ERROR_ACCESS`；`popen()` 拉起
+的 adb 子进程还会继承宿主的监听 socket，宿主退出后 socket 仍被持有，`carlifed` 会连上
+一个没人 accept 的僵尸 socket 且永不重连。宿主自身的 socket 也加了 `FD_CLOEXEC` 兜底。
 
 ### 单独运行某个组件
 
@@ -95,4 +112,6 @@ cd web && npm run dev                        # 前端热更新，代理 /ws 与 
 - 只实现有线（AOA）通路，无线 CarLife 未实现。
 - 触摸是单点，CarLife 协议本身不支持多指。
 - 视频只有 H.264；音频按 16 位 PCM 处理。
-- `carlife-host` 对 `connectionSetup()` 最多重试 3 次；仍失败需重启进程。
+- 重新插拔要重建 `carlife-host`，`run.sh` 会自动做；手工单独运行时需自己重启。
+- 手机侧 CarLife App 是系统在 accessory 附着时拉起的，比链路就绪慢几秒。`carlifed`
+  每 5 秒重发一次协议版本直到会话建立，用来覆盖这段延迟；一直连不上手机时会持续重发。

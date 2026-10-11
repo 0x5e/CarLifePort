@@ -1,11 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"log"
 	"sync"
 	"time"
+)
+
+const (
+	watchdogInterval    = 2 * time.Second
+	watchdogIdleTimeout = 5 * time.Second
 )
 
 type serverMessage struct {
@@ -57,6 +63,9 @@ type session struct {
 	audioSampleRate map[byte]int
 	audioChannels   map[byte]int
 	audioSamples    map[byte]uint64
+
+	/* Timestamp of the last upstream progress, used to re-drive a stalled handshake. */
+	lastProgress time.Time
 }
 
 func newSession(host *hostClient, hub *Hub, width, height, fps int) *session {
@@ -69,12 +78,64 @@ func newSession(host *hostClient, hub *Hub, width, height, fps int) *session {
 		audioSampleRate: make(map[byte]int),
 		audioChannels:   make(map[byte]int),
 		audioSamples:    make(map[byte]uint64),
+		lastProgress:    time.Now(),
+	}
+}
+
+// resetStream drops every per-session state. Called whenever carlife-host (re)connects,
+// because a reconnect means the previous CarLife session is over: the head-unit process
+// was restarted, which only happens after the phone was (re)plugged. Keeping the stale
+// state would leave the browser holding a decoder that no longer matches the new session.
+func (s *session) resetStream() {
+	s.mu.Lock()
+	s.avcC = nil
+	s.streaming = false
+	s.width = 0
+	s.height = 0
+	s.touchDown = false
+	s.audioSampleRate = make(map[byte]int)
+	s.audioChannels = make(map[byte]int)
+	s.audioSamples = make(map[byte]uint64)
+	s.lastProgress = time.Now()
+	s.mu.Unlock()
+}
+
+// sessionWatchdog re-sends the opening message when the handshake makes no progress.
+// The phone never speaks first, and the CarLife app on the phone is launched by the
+// system only after the accessory attaches, so the first request can arrive before the
+// app is listening (typical when the phone was plugged in after this service started or
+// was replugged). Re-sending is harmless: the phone simply answers again.
+func (s *session) sessionWatchdog(ctx context.Context) {
+	ticker := time.NewTicker(watchdogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		s.mu.Lock()
+		idle := time.Since(s.lastProgress)
+		stalled := s.hostReady && !s.streaming && idle >= watchdogIdleTimeout
+		if stalled {
+			// Space the retries out instead of firing on every tick.
+			s.lastProgress = time.Now()
+		}
+		s.mu.Unlock()
+		if !stalled {
+			continue
+		}
+		log.Printf("no CarLife session yet (idle %s), resending protocol version", idle.Truncate(time.Second))
+		s.startHandshake()
 	}
 }
 
 /* ------------------------------------------------------------ carlife-host events */
 
 func (s *session) onHostEvent(event hostEvent) {
+	s.mu.Lock()
+	s.lastProgress = time.Now()
+	s.mu.Unlock()
 	switch event.channel {
 	case chCmd:
 		s.onCommandEvent(event)

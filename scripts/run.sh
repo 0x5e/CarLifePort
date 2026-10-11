@@ -4,9 +4,14 @@
 #
 #   ./scripts/run.sh
 #
-# Startup order: carlife-usb-bridge -> carlife-host -> carlifed.
-# carlife-host waits for the bridge port 7200 before setting up channels, so no
-# manual delay is needed. When any process exits, the rest are stopped.
+# The phone may be plugged in before or after this script starts: usb-bridge waits for a
+# device instead of giving up, and carlife-host waits for the bridge without a deadline.
+#
+# bridge and host are restarted together whenever either exits, which is what happens when
+# the phone is unplugged. The link cannot be resumed in place: CarLifeVehicleLib only
+# establishes its six channels inside connectionSetup(), and the phone side starts a fresh
+# session on every accessory attach. carlifed stays up across a rebuild, so the browser
+# keeps its WebSocket connection and reconnects by itself.
 #
 set -euo pipefail
 
@@ -38,14 +43,15 @@ EOF
 fi
 
 # -------------------------------------------------------------- USB reset
-# accessory mode sticks across reconnects and can only be cleared through adb,
-# so clear the mode first and stop the adb server afterwards.
+# Only needed before the first start: accessory mode sticks across reconnects, so clearing
+# it here makes the bridge run a full 51/52/53 handshake instead of attaching to the
+# accessory session left over from a previous run.
 if command -v adb >/dev/null 2>&1; then
     echo "== resetting phone USB mode"
     if adb shell svc usb setFunctions >/dev/null 2>&1; then
         echo "   cleared accessory mode"
     else
-        echo "   no phone connected or not authorized, skipping (plug it in and rerun)"
+        echo "   no phone connected or not authorized, skipping (plug it in any time)"
     fi
     adb kill-server >/dev/null 2>&1 || true
 else
@@ -54,13 +60,12 @@ fi
 
 # ------------------------------------------------------------------ start
 PIDS=()
-WATCH_PID=""
+LAST_PID=0
 
 stop_all() {
     trap - INT TERM EXIT
     echo
     echo "== stopping all processes"
-    [ -n "$WATCH_PID" ] && kill "$WATCH_PID" 2>/dev/null || true
     [ "${#PIDS[@]}" -gt 0 ] && kill "${PIDS[@]}" 2>/dev/null || true
     wait 2>/dev/null || true
 }
@@ -69,39 +74,48 @@ trap stop_all INT TERM EXIT
 start() {
     local name="$1"; shift
     "$@" > >(while IFS= read -r line; do printf '[%s] %s\n' "$name" "$line"; done) 2>&1 &
-    local pid=$!
-    PIDS+=("$pid")
-    printf '== started %-7s pid %s\n' "$name" "$pid"
+    LAST_PID=$!
+    printf '== started %-7s pid %s\n' "$name" "$LAST_PID"
 }
-
-echo
-start bridge "$BRIDGE"
-start host   "$HOST"
-start server "$SERVER"
-
-# Stop everything as soon as one process exits, so a bridge that fails to start
-# does not leave the script hanging silently.
-watch() {
-    while :; do
-        sleep 1
-        for pid in "${PIDS[@]}"; do
-            if ! kill -0 "$pid" 2>/dev/null; then
-                echo "== process $pid exited, stopping all"
-                kill -TERM $$ 2>/dev/null || true
-                return
-            fi
-        done
-    done
-}
-watch &
-WATCH_PID=$!
 
 cat <<'EOF'
 
 == open http://127.0.0.1:8080 in a browser
 == open the CarLife app on the phone and confirm the connection
+== the phone may be plugged in before or after this script starts
+== unplugging and replugging the phone rebuilds the link automatically
 == Ctrl-C stops everything
 
 EOF
 
-wait
+start server "$SERVER"
+server_pid=$LAST_PID
+PIDS=("$server_pid")
+
+while :; do
+    start bridge "$BRIDGE"
+    bridge_pid=$LAST_PID
+    start host "$HOST"
+    host_pid=$LAST_PID
+    PIDS=("$server_pid" "$bridge_pid" "$host_pid")
+
+    # The bridge exits when the USB link drops (phone unplugged); the host exits when the
+    # bridge it depends on is gone. carlifed exiting is a real failure, so stop everything.
+    while :; do
+        sleep 1
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            echo "== carlifed exited, stopping" >&2
+            exit 1
+        fi
+        if ! kill -0 "$bridge_pid" 2>/dev/null || ! kill -0 "$host_pid" 2>/dev/null; then
+            break
+        fi
+    done
+
+    echo "== bridge or host exited, rebuilding the link in 2 s (Ctrl-C to stop)"
+    kill "$bridge_pid" "$host_pid" 2>/dev/null || true
+    wait "$bridge_pid" 2>/dev/null || true
+    wait "$host_pid" 2>/dev/null || true
+    PIDS=("$server_pid")
+    sleep 2
+done

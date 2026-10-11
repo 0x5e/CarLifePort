@@ -26,6 +26,12 @@
  *
  * Usage: start this process first (completes the AOA handshake and begins listening), then
  * start the head-unit program linked against libcarlifevehicle.
+ *
+ * Device lifetime: the phone may be plugged in before or after this process starts, so
+ * step 1 waits for a device instead of giving up. The process still exits once a link is
+ * lost (USB read error); the supervisor is expected to restart the bridge and the head-unit
+ * program together, because neither CarLifeVehicleLib nor the phone side can resume a
+ * session that was interrupted by a re-plug.
  */
 #include "aoa.h"
 
@@ -589,11 +595,83 @@ static int parse_args(int argc, char **argv, int *vid, int *pid, const char **ho
     return 0;
 }
 
+/* Acquire a claimed accessory device: pick a device, send 51/52/53 unless it is already in
+ * accessory mode, wait for the accessory re-enumeration, then claim the bulk interface.
+ *
+ * Every step is retried rather than treated as fatal, because the phone may still be on its
+ * way in: it can be plugged in after this process started, or it can be held by another
+ * program (adb server, WeChat) that has to let go first. The first attempt prints the device
+ * list; later attempts are throttled to one line per 10 s.
+ *
+ * Returns 0 with *out claimed and open, or -1 if a stop was requested. */
+static int acquire_device(int vid, int pid, int force_handshake, struct aoa_device *out)
+{
+    unsigned int attempt = 0;
+
+    for (;;) {
+        struct aoa_device dev;
+        int is_accessory = 0;
+
+        if (aoa_stop) {
+            return -1;
+        }
+
+        if (aoa_open_target(vid, pid, &dev, &is_accessory, attempt == 0) != 0) {
+            if (attempt == 0 || attempt % 10 == 9) {
+                aoa_log("no phone yet, waiting (attempt %u): plug it in and make sure no other "
+                        "program holds the USB device (adb server, WeChat)",
+                        attempt + 1);
+            }
+            goto retry;
+        }
+
+        aoa_log("found %04x:%04x%s", dev.vid, dev.pid,
+                is_accessory ? "  [already in accessory mode]" : "  [normal mode]");
+
+        if (is_accessory && !force_handshake) {
+            aoa_log("  already in accessory mode, skipping 51/52/53");
+        } else {
+            struct aoa_device prev = dev;
+
+            if (force_handshake && is_accessory) {
+                aoa_log("  --force-handshake: resending 51/52/53 to overwrite the descriptor "
+                        "stored on the phone");
+            }
+            if (aoa_handshake(&dev, 1) != 0) {
+                aoa_close(&dev);
+                goto retry;
+            }
+            aoa_close(&dev);
+            if (is_accessory) {
+                aoa_wait_rebind(&prev);
+            }
+            if (aoa_wait_accessory(vid, pid, &dev) != 0) {
+                aoa_log("  51/52/53 were accepted, but the device did not reappear in accessory mode");
+                goto retry;
+            }
+        }
+
+        if (aoa_claim_accessory(&dev) != 0) {
+            aoa_close(&dev);
+            goto retry;
+        }
+        aoa_log("accessory endpoints IN=0x%02x OUT=0x%02x", dev.ep_in, dev.ep_out);
+        *out = dev;
+        return 0;
+
+    retry:
+        if (attempt > 0 && attempt % 10 == 9) {
+            aoa_log("device not ready, still retrying (attempt %u)", attempt + 1);
+        }
+        sleep(1);
+        attempt++;
+    }
+}
+
 int main(int argc, char **argv)
 {
     int vid, pid, force_handshake, list_only;
     const char *host;
-    int is_accessory = 0;
     int rc;
     pthread_t tid;
     int i;
@@ -634,51 +712,14 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    aoa_log("== 1. enumerate and pick a device ==");
-    rc = aoa_open_target(vid, pid, &g_dev, &is_accessory, !g_quiet);
+    aoa_log("== 1. waiting for a phone ==");
+    rc = acquire_device(vid, pid, force_handshake, &g_dev);
     if (rc != 0) {
-        aoa_log("no usable device found: make sure the phone is plugged in and no other program holds the USB device (e.g. adb server, WeChat)");
         aoa_fini();
         return 1;
     }
-    aoa_log("selected %04x:%04x%s", g_dev.vid, g_dev.pid,
-            is_accessory ? "  [already in accessory mode]" : "  [normal mode]");
 
-    if (is_accessory && !force_handshake) {
-        aoa_log("== 2. AOA handshake ==\n  device is already in accessory mode, skipping 51/52/53");
-    } else {
-        struct aoa_device prev = g_dev;
-
-        aoa_log("== 2. AOA handshake ==");
-        if (force_handshake && is_accessory) {
-            aoa_log("  --force-handshake: resending 51/52/53 to overwrite the stale descriptor on the phone");
-        }
-        if (aoa_handshake(&g_dev, 1) != 0) {
-            aoa_close(&g_dev);
-            aoa_fini();
-            return 1;
-        }
-        aoa_close(&g_dev);
-        if (is_accessory) {
-            aoa_wait_rebind(&prev);
-        }
-        aoa_log("== 3. waiting for accessory mode re-enumeration ==");
-        if (aoa_wait_accessory(vid, pid, &g_dev) != 0) {
-            aoa_log("AOA handshake was sent, but the device did not reappear in accessory mode");
-            aoa_fini();
-            return 1;
-        }
-    }
-
-    aoa_log("== 4. prepare USB endpoints ==");
-    if (aoa_claim_accessory(&g_dev) != 0) {
-        aoa_close(&g_dev);
-        aoa_fini();
-        return 1;
-    }
-    aoa_log("  accessory endpoints IN=0x%02x OUT=0x%02x", g_dev.ep_in, g_dev.ep_out);
-
-    aoa_log("== 5. start local channel listeners ==");
+    aoa_log("== 2. start local channel listeners ==");
     if (setup_listeners(host) != 0) {
         shutdown_listeners();
         aoa_close(&g_dev);
@@ -695,7 +736,7 @@ int main(int argc, char **argv)
     }
     pthread_detach(tid);
 
-    aoa_log("== 6. bridge ready, you can start the head-unit program ==");
+    aoa_log("== 3. bridge ready, you can start the head-unit program ==");
     rc = usb_rx_loop();
 
     if (rc != 0) {

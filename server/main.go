@@ -32,9 +32,21 @@ func main() {
 	hub.session = sess
 	host.onEvent = sess.onHostEvent
 	host.onState = func(connected bool) {
-		sess.mu.Lock()
-		sess.hostReady = connected
-		sess.mu.Unlock()
+		// A host reconnect means the previous CarLife session is gone: carlife-host is
+		// restarted together with the bridge, so every stream state carried over from
+		// the old link must be dropped.
+		//
+		// hostReady is deliberately not set here. The socket being up only means the host
+		// process exists; the host accepts this connection and reports the real channel
+		// state in its EV_STATUS frame, which is sent only after connectionSetup()
+		// succeeded. Marking it ready here would make the watchdog send a protocol
+		// version while the six channels are still down.
+		sess.resetStream()
+		if !connected {
+			sess.mu.Lock()
+			sess.hostReady = false
+			sess.mu.Unlock()
+		}
 		sess.broadcastState()
 	}
 
@@ -42,6 +54,7 @@ func main() {
 	defer stop()
 
 	go host.run(ctx)
+	go sess.sessionWatchdog(ctx)
 
 	server := &http.Server{Addr: *addr, Handler: hub.Routes(*webDir)}
 	go func() {
