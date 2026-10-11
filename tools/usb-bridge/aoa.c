@@ -1,11 +1,13 @@
 /*
- * aoa.c — CarLife AOA USB 传输层实现（macOS / libusb）
+ * aoa.c — CarLife AOA USB transport layer implementation (macOS / libusb)
  *
- * 握手序列取自 Android 参考实现 CarLife-Android-Vehicle 的 AOAHostSetup：
- *   51 GET_PROTOCOL（读 2B，version = buf[1]<<8|buf[0]）
- *   52 SEND_IDENT ×6（index 0..5）
- *   53 START_ACCESSORY（此后 USB 逻辑插拔，原句柄失效，必须重新枚举）
- * 供参考：请求 58（AUDIO_SUPPORT）虽在 AOA 协议中定义，CarLife 从未调用，故不实现。
+ * Handshake sequence taken from AOAHostSetup in the Android reference implementation
+ * CarLife-Android-Vehicle:
+ *   51 GET_PROTOCOL (read 2B, version = buf[1]<<8|buf[0])
+ *   52 SEND_IDENT x6 (index 0..5)
+ *   53 START_ACCESSORY (USB then re-enumerates, the old handle becomes invalid and the device must be re-enumerated)
+ * For reference: request 58 (AUDIO_SUPPORT) is defined in the AOA protocol but CarLife never
+ * calls it, so it is not implemented.
  */
 #include "aoa.h"
 
@@ -63,7 +65,7 @@ void aoa_log(const char *fmt, ...)
     fflush(stderr);
 }
 
-/* ------------------------------------------------------------------ 工具 */
+/* ------------------------------------------------------------------ utils */
 
 static int is_accessory_pid(unsigned short vid, unsigned short pid)
 {
@@ -75,7 +77,8 @@ struct devnames {
     char prod[128];
 };
 
-/* 手机厂商关键字：多数手机的 iProduct 只是机型名（如 "Pixel 8"），靠厂商串识别更可靠 */
+/* Phone vendor keywords: on most phones iProduct is only the model name (e.g. "Pixel 8"),
+ * so matching the vendor string is more reliable */
 static const char *const kPhoneMaker[] = {
     "google", "xiaomi",  "redmi",  "poco",    "samsung",  "oppo",   "oneplus", "vivo",
     "huawei", "honor",   "meizu",  "realme",  "motorola", "sony",   "zte",     "nubia",
@@ -114,27 +117,27 @@ static int looks_like_phone(const struct devnames *n)
 static const char *tag_for(const struct libusb_device_descriptor *d, const struct devnames *n)
 {
     if (is_accessory_pid(d->idVendor, d->idProduct)) {
-        return "已进入 accessory 模式";
+        return "already in accessory mode";
     }
     if (d->idVendor == IPHONE_VID) {
-        return "跳过：Apple 设备";
+        return "skip: Apple device";
     }
     if (d->bDeviceClass == 0x03) {
-        return "跳过：HID";
+        return "skip: HID";
     }
     if (d->bDeviceClass == 0x08) {
-        return "跳过：USB 存储";
+        return "skip: USB storage";
     }
     if (d->bDeviceClass == 0x09) {
-        return "跳过：Hub";
+        return "skip: Hub";
     }
     if (looks_like_phone(n)) {
-        return "候选：疑似 Android 手机";
+        return "candidate: likely Android phone";
     }
-    return "候选：其它设备（非手机？）";
+    return "candidate: other device (not a phone?)";
 }
 
-/* 自动挑选打分：0 = 不候选，1 = 弱候选，2 = 疑似手机，3 = 已在 accessory */
+/* Auto-pick score: 0 = not a candidate, 1 = weak candidate, 2 = likely phone, 3 = already accessory */
 static int score_for(const struct libusb_device_descriptor *d, const struct devnames *n)
 {
     if (is_accessory_pid(d->idVendor, d->idProduct)) {
@@ -149,13 +152,13 @@ static int score_for(const struct libusb_device_descriptor *d, const struct devn
     return looks_like_phone(n) ? 2 : 1;
 }
 
-/* ------------------------------------------------------------------ 初始化 */
+/* ------------------------------------------------------------------ init */
 
 int aoa_init(void)
 {
     int rc = libusb_init(&g_ctx);
     if (rc != 0) {
-        aoa_log("libusb_init 失败：%s", libusb_error_name(rc));
+        aoa_log("libusb_init failed: %s", libusb_error_name(rc));
         g_ctx = NULL;
         return -1;
     }
@@ -180,7 +183,7 @@ void aoa_list_devices(void)
     }
     n = libusb_get_device_list(g_ctx, &list);
     if (n < 0) {
-        aoa_log("枚举 USB 设备失败：%s", libusb_error_name((int)n));
+        aoa_log("failed to enumerate USB devices: %s", libusb_error_name((int)n));
         return;
     }
     for (i = 0; i < n; i++) {
@@ -197,29 +200,29 @@ void aoa_list_devices(void)
             read_names(h, &d, &nm);
             libusb_close(h);
         } else {
-            snprintf(nm.prod, sizeof(nm.prod), "(无法打开：被其它程序占用？)");
+            snprintf(nm.prod, sizeof(nm.prod), "(cannot open: held by another program?)");
         }
         aoa_log("  %04x:%04x  %-26s %-12s %s", d.idVendor, d.idProduct,
-                nm.prod[0] ? nm.prod : "(无名称)", nm.maker[0] ? nm.maker : "-", tag_for(&d, &nm));
+                nm.prod[0] ? nm.prod : "(no name)", nm.maker[0] ? nm.maker : "-", tag_for(&d, &nm));
     }
     libusb_free_device_list(list, 1);
 }
 
-/* ------------------------------------------------------------------ 设备挑选 */
+/* ------------------------------------------------------------------ device pick */
 
 static const char *error_hint(int rc)
 {
     if (rc == LIBUSB_ERROR_ACCESS || rc == LIBUSB_ERROR_BUSY) {
-        return "（设备被占用：先执行 adb kill-server，或退出会抢占 USB 的程序）";
+        return "(device is busy: run adb kill-server first, or exit programs that grab the USB device)";
     }
     if (rc == LIBUSB_ERROR_NO_DEVICE) {
-        return "（设备已消失：手机可能刚重新枚举）";
+        return "(device is gone: the phone may have just re-enumerated)";
     }
     return "";
 }
 
-/* 扫一遍设备列表，挑选并打开最合适的一个。
- * 成功返回 0 并填充 *out（handle 有效）；失败返回 -1。 */
+/* Scan the device list and pick and open the best one.
+ * Returns 0 on success and fills *out (handle valid); returns -1 on failure. */
 static int pick_and_open(int want_vid, int want_pid, struct aoa_device *out, int *is_accessory_out,
                          int verbose)
 {
@@ -238,7 +241,7 @@ static int pick_and_open(int want_vid, int want_pid, struct aoa_device *out, int
     }
     n = libusb_get_device_list(g_ctx, &list);
     if (n < 0) {
-        aoa_log("枚举 USB 设备失败：%s", libusb_error_name((int)n));
+        aoa_log("failed to enumerate USB devices: %s", libusb_error_name((int)n));
         return -1;
     }
 
@@ -257,12 +260,12 @@ static int pick_and_open(int want_vid, int want_pid, struct aoa_device *out, int
             read_names(h, &d, &nm);
         } else {
             h = NULL;
-            snprintf(nm.prod, sizeof(nm.prod), "(无法打开)");
+            snprintf(nm.prod, sizeof(nm.prod), "(cannot open)");
         }
 
         if (verbose) {
             aoa_log("  %04x:%04x  %-26s %-12s %s", d.idVendor, d.idProduct,
-                    nm.prod[0] ? nm.prod : "(无名称)", nm.maker[0] ? nm.maker : "-",
+                    nm.prod[0] ? nm.prod : "(no name)", nm.maker[0] ? nm.maker : "-",
                     tag_for(&d, &nm));
         }
 
@@ -314,7 +317,7 @@ int aoa_open_target(int want_vid, int want_pid, struct aoa_device *out, int *is_
     return pick_and_open(want_vid, want_pid, out, is_accessory, verbose);
 }
 
-/* ------------------------------------------------------------------ 握手 */
+/* ------------------------------------------------------------------ handshake */
 
 static int handshake_transfers(libusb_device_handle *h, int do_start)
 {
@@ -325,13 +328,13 @@ static int handshake_transfers(libusb_device_handle *h, int do_start)
     r = libusb_control_transfer(h, REQ_TYPE_IN_VENDOR, AOA_GET_PROTOCOL, 0, 0, ver, 2,
                                 EP0_TIMEOUT_MS);
     if (r < 0) {
-        aoa_log("  51 GET_PROTOCOL 失败：%s %s", libusb_error_name(r), error_hint(r));
+        aoa_log("  51 GET_PROTOCOL failed: %s %s", libusb_error_name(r), error_hint(r));
         return -1;
     }
     version = ((unsigned int)ver[1] << 8) | (unsigned int)ver[0];
-    aoa_log("  51 GET_PROTOCOL  OK   设备报告 AOA 版本 = %u", version);
+    aoa_log("  51 GET_PROTOCOL  OK   device reports AOA version = %u", version);
     if (version < 1 || version > 2) {
-        aoa_log("  该设备不支持 AOA 1.0/2.0，无法继续");
+        aoa_log("  device does not support AOA 1.0/2.0, cannot continue");
         return -1;
     }
 
@@ -343,24 +346,24 @@ static int handshake_transfers(libusb_device_handle *h, int do_start)
         r = libusb_control_transfer(h, REQ_TYPE_OUT_VENDOR, AOA_SEND_IDENT, 0, (unsigned short)i,
                                     sbuf, (unsigned short)len, EP0_TIMEOUT_MS);
         if (r < 0) {
-            aoa_log("  52 SEND_IDENT[index=%d] 失败：%s %s", i, libusb_error_name(r), error_hint(r));
+            aoa_log("  52 SEND_IDENT[index=%d] failed: %s %s", i, libusb_error_name(r), error_hint(r));
             return -1;
         }
     }
-    aoa_log("  52 SEND_IDENT   OK   已发送 6 项标识");
+    aoa_log("  52 SEND_IDENT   OK   sent 6 identifiers");
 
     if (!do_start) {
-        aoa_log("  已跳过 53 START_ACCESSORY");
+        aoa_log("  skipped 53 START_ACCESSORY");
         return 0;
     }
 
     r = libusb_control_transfer(h, REQ_TYPE_OUT_VENDOR, AOA_START_ACCESSORY, 0, 0, NULL, 0,
                                 EP0_TIMEOUT_MS);
     if (r < 0) {
-        aoa_log("  53 START_ACCESSORY 失败：%s %s", libusb_error_name(r), error_hint(r));
+        aoa_log("  53 START_ACCESSORY failed: %s %s", libusb_error_name(r), error_hint(r));
         return -1;
     }
-    aoa_log("  53 START_ACCESSORY OK   USB 即将逻辑插拔，等待重新枚举…");
+    aoa_log("  53 START_ACCESSORY OK   USB will re-enumerate, waiting...");
     return 0;
 }
 
@@ -369,7 +372,7 @@ int aoa_handshake(struct aoa_device *d, int do_start)
     int rc = libusb_claim_interface(d->handle, 0);
 
     if (rc != 0) {
-        aoa_log("接口 0 claim 失败：%s %s", libusb_error_name(rc), error_hint(rc));
+        aoa_log("failed to claim interface 0: %s %s", libusb_error_name(rc), error_hint(rc));
         return -1;
     }
     rc = handshake_transfers(d->handle, do_start);
@@ -391,22 +394,23 @@ int aoa_wait_accessory(int want_vid, int want_pid, struct aoa_device *out)
         sleep(1);
         if (pick_and_open(want_vid, want_pid, &d, &acc, 0) == 0) {
             if (acc) {
-                aoa_log("  第 %d 次尝试：已进入 accessory 模式 %04x:%04x", attempt, d.vid, d.pid);
+                aoa_log("  attempt %d: entered accessory mode %04x:%04x", attempt, d.vid, d.pid);
                 *out = d;
                 return 0;
             }
-            aoa_log("  第 %d 次尝试：找到 %04x:%04x，但还不是 accessory 模式", attempt, d.vid, d.pid);
+            aoa_log("  attempt %d: found %04x:%04x, but not yet in accessory mode", attempt, d.vid, d.pid);
             aoa_close(&d);
         } else {
-            aoa_log("  第 %d 次尝试：未发现可打开的设备", attempt);
+            aoa_log("  attempt %d: no openable device found", attempt);
         }
     }
-    aoa_log("重试 %d 次后仍未进入 accessory 模式", RETRY_ACCESSORY_MODE);
+    aoa_log("still not in accessory mode after %d retries", RETRY_ACCESSORY_MODE);
     return -1;
 }
 
-/* 等原设备节点失效（USB 逻辑插拔完成）。
- * 前后 VID:PID 可能相同，无法据此区分新旧节点，故以「总线地址上不再出现同一节点」为判据。 */
+/* Wait for the original device node to disappear (USB re-enumeration complete).
+ * VID:PID may be the same before and after, so it cannot distinguish the old and new
+ * nodes; the criterion is "the same node no longer appears at the old bus address". */
 static void wait_rebind(unsigned short vid, unsigned short pid, unsigned char old_addr)
 {
     int i;
@@ -434,12 +438,12 @@ static void wait_rebind(unsigned short vid, unsigned short pid, unsigned char ol
         }
         libusb_free_device_list(list, 1);
         if (!still_there) {
-            aoa_log("  原设备节点已失效（第 %d 次检查）", i + 1);
+            aoa_log("  original device node is gone (check %d)", i + 1);
             return;
         }
         sleep(1);
     }
-    aoa_log("  警告：%d 秒内未见重枚举，仍继续", RETRY_REBIND);
+    aoa_log("  warning: no re-enumeration within %d s, continuing anyway", RETRY_REBIND);
 }
 
 int aoa_wait_rebind(const struct aoa_device *prev)
@@ -448,11 +452,12 @@ int aoa_wait_rebind(const struct aoa_device *prev)
     return 0;
 }
 
-/* ------------------------------------------------------------------ 端点 */
+/* ------------------------------------------------------------------ endpoints */
 
-/* accessory 接口 = class 0xff / subclass 0xff（adb 接口的 subclass 是 0x42，据此区分）。
- * 端点地址随配置变化（accessory 单独存在时可能是 0x81/0x02，与 adb 共存时是 0x81/0x01），
- * 必须从描述符读，不能硬编码。 */
+/* accessory interface = class 0xff / subclass 0xff (the adb interface has subclass 0x42,
+ * which is how they are told apart). The endpoint addresses vary with the configuration
+ * (0x81/0x02 when accessory is alone, 0x81/0x01 when it coexists with adb), so they must be
+ * read from the descriptors and cannot be hardcoded. */
 static int find_accessory_endpoints(libusb_device *dev, unsigned char *ep_in,
                                     unsigned char *ep_out)
 {
@@ -503,12 +508,12 @@ int aoa_claim_accessory(struct aoa_device *d)
     int rc;
 
     if (find_accessory_endpoints(libusb_get_device(d->handle), &d->ep_in, &d->ep_out) != 0) {
-        aoa_log("未找到 accessory 接口的 bulk 端点（class 0xff / subclass 0xff）");
+        aoa_log("no bulk endpoints found on the accessory interface (class 0xff / subclass 0xff)");
         return -1;
     }
     rc = libusb_claim_interface(d->handle, 0);
     if (rc != 0) {
-        aoa_log("接口 0 claim 失败：%s %s", libusb_error_name(rc), error_hint(rc));
+        aoa_log("failed to claim interface 0: %s %s", libusb_error_name(rc), error_hint(rc));
         return -1;
     }
     d->claimed = 1;
@@ -528,7 +533,7 @@ void aoa_close(struct aoa_device *d)
     d->handle = NULL;
 }
 
-/* ------------------------------------------------------------------ 收发 */
+/* ------------------------------------------------------------------ send/receive */
 
 static void put_be32(unsigned char *p, unsigned int v)
 {
@@ -556,7 +561,8 @@ int aoa_send_message(struct aoa_device *d, unsigned int channel, const unsigned 
     put_be32(aoa_head, channel);
     put_be32(aoa_head + 4, len);
 
-    /* AOA 头与消息体必须分为两次 bulk transfer —— 参考实现同样是两个连续的 bulkTransferOut */
+    /* The AOA head and the message body must be sent as two separate bulk transfers --
+     * the reference implementation also issues two consecutive bulkTransferOut calls */
     r = libusb_bulk_transfer(d->handle, d->ep_out, aoa_head, AOA_HEAD_LEN, &sent, BULK_TIMEOUT_MS);
     if (r != 0) {
         return r;
@@ -565,7 +571,7 @@ int aoa_send_message(struct aoa_device *d, unsigned int channel, const unsigned 
         return LIBUSB_ERROR_IO;
     }
 
-    /* 消息体按 16KB 分片（AOA 单次 bulk 上限） */
+    /* Message body in 16KB chunks (the AOA per-transfer bulk limit) */
     while (done < len) {
         unsigned int want = len - done;
 
@@ -603,14 +609,14 @@ int aoa_read_exact(struct aoa_device *d, unsigned char *dst, unsigned int len)
         r = libusb_bulk_transfer(d->handle, d->ep_in, dst + done, (int)want, &transferred,
                                  BULK_TIMEOUT_MS);
         if (r == LIBUSB_ERROR_TIMEOUT) {
-            continue; /* 周期性超时，交由 aoa_stop 判断是否退出 */
+            continue; /* periodic timeout, let aoa_stop decide whether to exit */
         }
         if (r != 0) {
-            aoa_log("USB 读取失败：%s %s", libusb_error_name(r), error_hint(r));
+            aoa_log("USB read failed: %s %s", libusb_error_name(r), error_hint(r));
             return -1;
         }
         if (transferred <= 0) {
-            aoa_log("USB 读取返回 0 字节");
+            aoa_log("USB read returned 0 bytes");
             return -1;
         }
         done += (unsigned int)transferred;

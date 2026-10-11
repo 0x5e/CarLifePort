@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// 与 host/protocol.h 保持一致。
+// Kept in sync with host/protocol.h.
 const (
 	chCmd   byte = 1
 	chVideo byte = 2
@@ -21,25 +21,25 @@ const (
 	chCtrl  byte = 6
 )
 
-// 上行事件（carlife-host -> 本进程）
+// Upstream events (carlife-host -> this process)
 const (
-	evStatus              byte = 1
-	evProtocolMatch       byte = 2
-	evMDInfo              byte = 3
-	evVideoInitDone       byte = 4
-	evVideoFPSDone        byte = 5
-	evForeground          byte = 6
-	evBackground          byte = 7
-	evScreenOn            byte = 8
-	evScreenOff           byte = 9
-	evTeleState           byte = 10
-	evMicWakeup           byte = 11
-	evMicEnd              byte = 12
-	evMicRecog            byte = 13
-	evMDExit              byte = 14
-	evModuleStatus        byte = 15
+	evStatus               byte = 1
+	evProtocolMatch        byte = 2
+	evMDInfo               byte = 3
+	evVideoInitDone        byte = 4
+	evVideoFPSDone         byte = 5
+	evForeground           byte = 6
+	evBackground           byte = 7
+	evScreenOn             byte = 8
+	evScreenOff            byte = 9
+	evTeleState            byte = 10
+	evMicWakeup            byte = 11
+	evMicEnd               byte = 12
+	evMicRecog             byte = 13
+	evMDExit               byte = 14
+	evModuleStatus         byte = 15
 	evFeatureConfigRequest byte = 16
-	evLog                 byte = 90
+	evLog                  byte = 90
 
 	evVideoData      byte = 1
 	evVideoHeartbeat byte = 2
@@ -52,18 +52,18 @@ const (
 	evAudioSeek   byte = 6
 )
 
-// 下行命令（本进程 -> carlife-host）
+// Downstream commands (this process -> carlife-host)
 const (
-	cmdProtocolVersion     byte = 1
-	cmdVideoEncoderInit    byte = 2
-	cmdVideoEncoderStart   byte = 3
-	cmdVideoEncoderPause   byte = 4
-	cmdVideoEncoderReset   byte = 5
-	cmdGoToForeground      byte = 6
-	cmdLaunchModeNormal    byte = 7
-	cmdLaunchModePhone     byte = 8
-	cmdLaunchModeMap       byte = 9
-	cmdLaunchModeMusic     byte = 10
+	cmdProtocolVersion   byte = 1
+	cmdVideoEncoderInit  byte = 2
+	cmdVideoEncoderStart byte = 3
+	cmdVideoEncoderPause byte = 4
+	cmdVideoEncoderReset byte = 5
+	cmdGoToForeground    byte = 6
+	cmdLaunchModeNormal  byte = 7
+	cmdLaunchModePhone   byte = 8
+	cmdLaunchModeMap     byte = 9
+	cmdLaunchModeMusic   byte = 10
 
 	cmdTouchAction      byte = 1
 	cmdTouchDown        byte = 2
@@ -77,7 +77,7 @@ const (
 	cmdVRData byte = 1
 )
 
-// 触摸动作沿用 Android MotionEvent 取值。
+// Touch actions use the Android MotionEvent values.
 const (
 	motionDown int32 = 0
 	motionUp   int32 = 1
@@ -90,14 +90,14 @@ const (
 	reconnectInterval = 2 * time.Second
 )
 
-// hostEvent 是一条已经拆掉帧头的事件；payload 已去掉 tag 字节。
+// hostEvent is an event with the frame header already stripped; payload has the tag byte removed.
 type hostEvent struct {
 	channel byte
 	tag     byte
 	payload []byte
 }
 
-// hostClient 维持与 carlife-host 的 Unix socket 连接，断线自动重连。
+// hostClient maintains the Unix socket connection to carlife-host and reconnects automatically after a drop.
 type hostClient struct {
 	path string
 
@@ -112,19 +112,19 @@ func newHostClient(path string) *hostClient {
 	return &hostClient{path: path}
 }
 
-// run 阻塞运行，直到 ctx 结束。
+// run blocks until ctx is done.
 func (h *hostClient) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		conn, err := net.Dial("unix", h.path)
 		if err != nil {
-			log.Printf("等待 carlife-host（%v），%s 后重试", err, reconnectInterval)
+			log.Printf("waiting for carlife-host (%v), retrying in %s", err, reconnectInterval)
 			if !sleepContext(ctx, reconnectInterval) {
 				return
 			}
 			continue
 		}
 
-		log.Printf("已连接 carlife-host：%s", h.path)
+		log.Printf("connected to carlife-host: %s", h.path)
 		h.writeMu.Lock()
 		h.conn = conn
 		h.writeMu.Unlock()
@@ -140,7 +140,7 @@ func (h *hostClient) run(ctx context.Context) {
 		}
 		h.writeMu.Unlock()
 		conn.Close()
-		log.Printf("与 carlife-host 断开，准备重连")
+		log.Printf("disconnected from carlife-host, reconnecting")
 		if h.onState != nil {
 			h.onState(false)
 		}
@@ -156,7 +156,7 @@ func (h *hostClient) readLoop(conn net.Conn) {
 		channel := header[0]
 		length := binary.BigEndian.Uint32(header[1:])
 		if length == 0 || length > maxFramePayload {
-			log.Printf("carLife-host 发出非法帧：channel=%d length=%d", channel, length)
+			log.Printf("carLife-host sent an invalid frame: channel=%d length=%d", channel, length)
 			return
 		}
 		payload := make([]byte, length)
@@ -169,12 +169,12 @@ func (h *hostClient) readLoop(conn net.Conn) {
 	}
 }
 
-// send 把一条命令写给 carlife-host。连接不可用时返回错误，由调用方决定是否忽略。
+// send writes one command to carlife-host. It returns an error when the connection is unavailable; the caller decides whether to ignore it.
 func (h *hostClient) send(channel, tag byte, payload []byte) error {
 	h.writeMu.Lock()
 	defer h.writeMu.Unlock()
 	if h.conn == nil {
-		return fmt.Errorf("carlife-host 未连接")
+		return fmt.Errorf("carlife-host not connected")
 	}
 	frame := make([]byte, frameHeaderSize+1+len(payload))
 	frame[0] = channel
@@ -187,7 +187,7 @@ func (h *hostClient) send(channel, tag byte, payload []byte) error {
 	return nil
 }
 
-// ------------------------------------------------------------ 命令构造辅助
+// ------------------------------------------------------------ command builders
 
 func be32(value int32) []byte {
 	buffer := make([]byte, 4)

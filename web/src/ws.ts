@@ -9,7 +9,7 @@ export interface ConnectionHandlers {
   onBytes?: (count: number) => void;
 }
 
-/** 带自动重连的 WebSocket 客户端，连接 CarLife 车机端后端。 */
+/** WebSocket client with automatic reconnect, talking to the CarLife backend. */
 export class Connection {
   private socket: WebSocket | null = null;
   private retryTimer: number | null = null;

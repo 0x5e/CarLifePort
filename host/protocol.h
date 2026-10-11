@@ -1,25 +1,29 @@
 /*
- * carlife-host 与 Go 后端之间的帧协议。
+ * Frame protocol between carlife-host and the Go backend.
  *
- * 传输：AF_UNIX SOCK_STREAM，carlife-host 作为监听方。
- * 帧格式：[1B channel][4B payloadLen 大端][payload]
- * payload 的第一个字节是 tag，其余是数据；tag 的含义由 channel 决定。
+ * Transport: AF_UNIX SOCK_STREAM, with carlife-host as the listening side.
+ * Frame format: [1B channel][4B payloadLen big-endian][payload]
+ * The first byte of the payload is the tag, the remaining bytes are data; the
+ * meaning of the tag is determined by the channel.
  *
- * channel 取值与 CarLife 协议里的 E_CHANNEL_TYPE 一致，便于对照库源码。
+ * Channel values match E_CHANNEL_TYPE in the CarLife protocol so they can be
+ * cross-referenced with the library source.
  */
 #ifndef CARLIFE_HOST_PROTOCOL_H
 #define CARLIFE_HOST_PROTOCOL_H
 
-/* 帧头长度：1B channel + 4B payloadLen(大端) */
+/* Frame header length: 1B channel + 4B payloadLen (big-endian) */
 #define CL_FRAME_HEADER 5
 
-/* 默认 Unix socket 路径 */
+/* Default Unix socket path */
 #define CL_DEFAULT_SOCKET "/tmp/carlife-host.sock"
 
-/* usb-bridge 命令通道的本地端口，宿主用它判断桥接层是否已经就绪 */
+/* Local port of the usb-bridge command channel; the host uses it to detect
+ * whether the bridge is ready */
 #define CL_BRIDGE_PORT 7200
 
-/* 单帧最大长度，用于防御性校验（视频帧最大 600KB + 余量） */
+/* Maximum length of a single frame, used for defensive validation
+ * (video frames are at most 600KB plus margin) */
 #define CL_MAX_PAYLOAD (1024 * 1024)
 
 enum {
@@ -31,15 +35,15 @@ enum {
     CH_CTRL = 6
 };
 
-/* ---- 上行：carlife-host -> Go 后端 ---- */
+/* ---- Upstream: carlife-host -> Go backend ---- */
 
 /* CH_CMD */
 enum {
-    EV_STATUS = 1,              /* [1B connected][4B connectionSetup 返回码 大端] */
-    EV_PROTOCOL_MATCH = 2,      /* [4B matchStatus 大端] */
-    EV_MD_INFO = 3,             /* UTF-8 JSON，手机设备信息 */
-    EV_VIDEO_INIT_DONE = 4,     /* [4B width][4B height][4B frameRate] 大端 */
-    EV_VIDEO_FPS_DONE = 5,      /* [4B frameRate] 大端 */
+    EV_STATUS = 1,              /* [1B connected][4B connectionSetup return code big-endian] */
+    EV_PROTOCOL_MATCH = 2,      /* [4B matchStatus big-endian] */
+    EV_MD_INFO = 3,             /* UTF-8 JSON, phone device info */
+    EV_VIDEO_INIT_DONE = 4,     /* [4B width][4B height][4B frameRate] big-endian */
+    EV_VIDEO_FPS_DONE = 5,      /* [4B frameRate] big-endian */
     EV_FOREGROUND = 6,
     EV_BACKGROUND = 7,
     EV_SCREEN_ON = 8,
@@ -51,15 +55,15 @@ enum {
     EV_MD_EXIT = 14,
     EV_MODULE_STATUS = 15,      /* UTF-8 JSON */
     EV_FEATURE_CONFIG_REQUEST = 16,
-    EV_LOG = 90                 /* UTF-8 文本，诊断用 */
+    EV_LOG = 90                 /* UTF-8 text, for diagnostics */
 };
 
 /* CH_VIDEO */
 enum { EV_VIDEO_DATA = 1, EV_VIDEO_HEARTBEAT = 2 };
 
-/* CH_AUDIO / CH_TTS / CH_VR —— 音频类通道共用一组 tag */
+/* CH_AUDIO / CH_TTS / CH_VR -- audio channels share one set of tags */
 enum {
-    EV_AUDIO_INIT = 1,          /* [4B sampleRate][4B channelConfig][4B sampleFormat] 大端 */
+    EV_AUDIO_INIT = 1,          /* [4B sampleRate][4B channelConfig][4B sampleFormat] big-endian */
     EV_AUDIO_DATA = 2,
     EV_AUDIO_STOP = 3,
     EV_AUDIO_PAUSE = 4,
@@ -70,12 +74,12 @@ enum {
 /* CH_CTRL */
 enum { EV_CTRL_UI_ACTION_SOUND = 1 };
 
-/* ---- 下行：Go 后端 -> carlife-host ---- */
+/* ---- Downstream: Go backend -> carlife-host ---- */
 
 /* CH_CMD */
 enum {
-    CMD_PROTOCOL_VERSION = 1,       /* [4B major][4B minor] 大端 */
-    CMD_VIDEO_ENCODER_INIT = 2,     /* [4B width][4B height][4B frameRate] 大端 */
+    CMD_PROTOCOL_VERSION = 1,       /* [4B major][4B minor] big-endian */
+    CMD_VIDEO_ENCODER_INIT = 2,     /* [4B width][4B height][4B frameRate] big-endian */
     CMD_VIDEO_ENCODER_START = 3,
     CMD_VIDEO_ENCODER_PAUSE = 4,
     CMD_VIDEO_ENCODER_RESET = 5,
@@ -86,9 +90,9 @@ enum {
     CMD_LAUNCH_MODE_MUSIC = 10
 };
 
-/* CH_CTRL —— action 取值沿用 Android MotionEvent：0=DOWN 1=UP 2=MOVE */
+/* CH_CTRL -- action values follow Android MotionEvent: 0=DOWN 1=UP 2=MOVE */
 enum {
-    CMD_TOUCH_ACTION = 1,       /* [4B action][4B x][4B y] 大端 */
+    CMD_TOUCH_ACTION = 1,       /* [4B action][4B x][4B y] big-endian */
     CMD_TOUCH_DOWN = 2,         /* [4B x][4B y] */
     CMD_TOUCH_UP = 3,
     CMD_TOUCH_MOVE = 4,
@@ -99,6 +103,6 @@ enum {
 };
 
 /* CH_VR */
-enum { CMD_VR_DATA = 1 };       /* [4B timestamp 大端][PCM] */
+enum { CMD_VR_DATA = 1 };       /* [4B timestamp big-endian][PCM] */
 
 #endif /* CARLIFE_HOST_PROTOCOL_H */

@@ -12,18 +12,18 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8080", "HTTP 监听地址")
-	hostSocket := flag.String("host-socket", "/tmp/carlife-host.sock", "carlife-host 的 Unix socket 路径")
-	webDir := flag.String("web", "web/dist", "前端静态文件目录")
-	width := flag.Int("width", 1280, "请求手机编码的视频宽度")
-	height := flag.Int("height", 720, "请求手机编码的视频高度")
-	fps := flag.Int("fps", 30, "请求手机编码的视频帧率")
+	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
+	hostSocket := flag.String("host-socket", "/tmp/carlife-host.sock", "Unix socket path of carlife-host")
+	webDir := flag.String("web", "web/dist", "static web asset directory")
+	width := flag.Int("width", 1280, "requested phone video width")
+	height := flag.Int("height", 720, "requested phone video height")
+	fps := flag.Int("fps", 30, "requested phone video frame rate")
 	flag.Parse()
 
 	log.SetFlags(log.Ltime)
 
 	if _, err := os.Stat(*webDir); err != nil {
-		log.Printf("提示：%s 不存在，先在 web/ 目录执行 npm install && npm run build", *webDir)
+		log.Printf("warning: %s does not exist; run npm install && npm run build in web/ first", *webDir)
 	}
 
 	hub := newHub()
@@ -51,13 +51,13 @@ func main() {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("CarLife 车机端服务已启动")
-	log.Printf("  浏览器打开   http://%s", *addr)
-	log.Printf("  前端目录     %s", *webDir)
-	log.Printf("  等待宿主进程 %s", *hostSocket)
+	log.Printf("CarLife head unit service started")
+	log.Printf("  open browser  http://%s", *addr)
+	log.Printf("  web assets    %s", *webDir)
+	log.Printf("  waiting for   %s", *hostSocket)
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("HTTP 服务退出：%v", err)
+		log.Fatalf("HTTP server exited: %v", err)
 	}
-	log.Printf("已停止")
+	log.Printf("stopped")
 }

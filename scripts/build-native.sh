@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# 构建 macOS(aarch64) 原生依赖：
-#   1. protobuf 2.5.0 静态库（CarLifeVehicleLib 的序列化依赖）
-#   2. libcarlifevehicle.dylib（CarLife 车机侧协议栈）
+# Build the macOS (aarch64) native dependencies:
+#   1. protobuf 2.5.0 static library (serialization dependency of CarLifeVehicleLib)
+#   2. libcarlifevehicle.dylib (CarLife head-unit protocol stack)
 #
-# 产物落在 .build/ 下，不进入版本库。
+# Artifacts land in .build/ and are not tracked by git.
 #
 set -euo pipefail
 
@@ -12,7 +12,7 @@ FORCE=0
 for arg in "$@"; do
     case "$arg" in
         --force) FORCE=1 ;;
-        *) echo "未知参数：$arg" >&2; exit 2 ;;
+        *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done
 
@@ -28,12 +28,12 @@ mkdir -p "$BUILD" "$PB_PREFIX" "$LIB_OUT"
 
 # ---------------------------------------------------------------- protobuf
 if [ ! -d "$PB_SRC" ]; then
-    echo "== 解包 protobuf 2.5.0"
+    echo "== extracting protobuf 2.5.0"
     tar xzf "$ROOT/vendor/carlife/CarLife-Vehicle-Lib/protobuf-2.5.0.tar.gz" -C "$BUILD"
 fi
 
-# protobuf 2.5.0 发布时还没有 Apple Silicon，平台宏识别不出 arm64，
-# 补齐 aarch64 分支后即可原样编译。
+# protobuf 2.5.0 predates Apple Silicon, so its platform macros cannot identify
+# arm64. Adding the aarch64 branch lets every other source compile unchanged.
 python3 - "$PB_SRC/src/google/protobuf/stubs/platform_macros.h" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -48,35 +48,37 @@ if '__aarch64__' not in source:
         1,
     )
     path.write_text(source)
-    print("== 已为 protobuf 补上 arm64 平台宏")
+    print("== patched protobuf platform macros for arm64")
 PY
 
 if [ ! -f "$PB_PREFIX/lib/libprotobuf.a" ]; then
-    echo "== 构建 protobuf（日志：.build/protobuf-*.log）"
+    echo "== building protobuf (logs: .build/protobuf-*.log)"
     (
         cd "$PB_SRC"
-        # configure 用 conftest 探测运行时能力；上一次中断留下的同名文件或目录会让
-        # 链接器无法产出测试程序，导致 pthread 之类的探测全部误判为「否」。
+        # configure probes runtime capabilities with conftest. A leftover file or
+        # directory of that name from an interrupted run makes the linker fail to
+        # produce the test binaries, so every probe (pthread included) reports no.
         rm -rf conftest conftest.dir conftest.c conftest.cpp conftest.o conftest.err
-        # 本机编译，不能传 --host：autoconf 会把 host 与 build 不等判成交叉编译，
-        # 进而跳过 pthread 等运行时能力探测，导致 common.cc 直接 #error。
+        # This is a native build, so do not pass --host. autoconf would treat
+        # host != build as a cross build and skip runtime capability probes such
+        # as pthread, which makes common.cc fail with #error.
         ./configure --disable-shared --enable-static \
             CC=clang CXX=clang++ \
             CFLAGS="-O2 -w" CXXFLAGS="-std=gnu++98 -O2 -w" \
             --prefix="$PB_PREFIX" > "$BUILD/protobuf-configure.log" 2>&1
         grep -q '^#define HAVE_PTHREAD 1' config.h || {
-            echo "protobuf 的 pthread 探测失败，见 .build/protobuf-configure.log" >&2
+            echo "protobuf pthread probe failed, see .build/protobuf-configure.log" >&2
             exit 1
         }
         make -j"$JOBS" > "$BUILD/protobuf-make.log" 2>&1
         make install > "$BUILD/protobuf-install.log" 2>&1
     )
 fi
-echo "== protobuf 就绪：$PB_PREFIX/lib/libprotobuf.a"
+echo "== protobuf ready: $PB_PREFIX/lib/libprotobuf.a"
 
 # ------------------------------------------------------- libcarlifevehicle
 if [ -f "$LIB_OUT/libcarlifevehicle.dylib" ] && [ "$FORCE" != 1 ]; then
-    echo "== libcarlifevehicle 已存在，跳过编译（--force 可强制重建）"
+    echo "== libcarlifevehicle already built, skipping (--force rebuilds it)"
     ls -lh "$LIB_OUT/libcarlifevehicle.dylib"
     exit 0
 fi
@@ -106,9 +108,9 @@ done < <(
          "$LIB_SRC/utility" "$LIB_SRC/protobuf/cc/src" \
          \( -name '*.cpp' -o -name '*.cc' \) | sort
 )
-echo "== 编译完成，共 ${#OBJECTS[@]} 个源文件"
+echo "== compiled ${#OBJECTS[@]} source files"
 
 clang++ -dynamiclib -o "$LIB_OUT/libcarlifevehicle.dylib" "${OBJECTS[@]}" \
     -L"$PB_PREFIX/lib" -lprotobuf -lpthread
-echo "== 链接完成：$LIB_OUT/libcarlifevehicle.dylib"
+echo "== linked: $LIB_OUT/libcarlifevehicle.dylib"
 ls -lh "$LIB_OUT/libcarlifevehicle.dylib"

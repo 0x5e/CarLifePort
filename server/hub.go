@@ -21,7 +21,7 @@ type viewer struct {
 	send chan outbound
 }
 
-// Hub 管理所有浏览器连接，并向上游 session 转发它们的控制消息。
+// Hub manages all browser viewers and forwards their control messages to the upstream session.
 type Hub struct {
 	mu      sync.Mutex
 	viewers map[*viewer]struct{}
@@ -58,7 +58,7 @@ func (h *Hub) count() int {
 	return len(h.viewers)
 }
 
-// Broadcast 把一帧二进制数据发给所有浏览器；消费不过来的连接直接丢弃该帧。
+// Broadcast sends one binary frame to all viewers; a viewer that cannot keep up drops the frame.
 func (h *Hub) Broadcast(data []byte) {
 	if len(data) == 0 {
 		return
@@ -77,7 +77,7 @@ func (h *Hub) Broadcast(data []byte) {
 	}
 }
 
-// BroadcastJSON 把一条控制消息发给所有浏览器。
+// BroadcastJSON sends one control message to all viewers.
 func (h *Hub) BroadcastJSON(value any) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -99,11 +99,11 @@ func (h *Hub) BroadcastJSON(value any) {
 
 func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// 本地工具，允许任意来源打开页面。
+		// Local tool: allow the page to be opened from any origin.
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		log.Printf("WebSocket 握手失败：%v", err)
+		log.Printf("WebSocket handshake failed: %v", err)
 		return
 	}
 
@@ -117,7 +117,7 @@ func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	go writeViewer(ctx, v)
 
-	// 先把当前状态补给新连接，再让 session 广播一次完整状态。
+	// Send the current state to the new viewer first, then let the session broadcast a full state.
 	select {
 	case v.send <- outbound{text: true, data: mustJSON(serverMessage{Type: "hello", DeviceName: "CarLife"})}:
 	default:
@@ -165,7 +165,7 @@ func mustJSON(value any) []byte {
 	return data
 }
 
-/* ----------------------------------------------------------------- 画面设置 */
+/* ----------------------------------------------------------------- display settings */
 
 type displayPreset struct {
 	Width  int `json:"width"`
@@ -179,7 +179,7 @@ type displayInfo struct {
 	Presets []displayPreset `json:"presets"`
 }
 
-// CarLife 车机端常见的几种屏幕规格。
+// Common screen modes for CarLife head units.
 var displayPresets = []displayPreset{
 	{Width: 800, Height: 480},
 	{Width: 1024, Height: 600},
@@ -191,7 +191,7 @@ var displayPresets = []displayPreset{
 func (h *Hub) serveDisplay(w http.ResponseWriter, r *http.Request) {
 	sess := h.session
 	if sess == nil {
-		http.Error(w, "会话未就绪", http.StatusServiceUnavailable)
+		http.Error(w, "session not ready", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -202,11 +202,11 @@ func (h *Hub) serveDisplay(w http.ResponseWriter, r *http.Request) {
 			FPS    int `json:"fps"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, "请求体不是合法的 JSON", http.StatusBadRequest)
+			http.Error(w, "request body is not valid JSON", http.StatusBadRequest)
 			return
 		}
 		if request.Width < 320 || request.Width > 3840 || request.Height < 240 || request.Height > 2160 {
-			http.Error(w, "分辨率超出可用范围", http.StatusBadRequest)
+			http.Error(w, "resolution out of range", http.StatusBadRequest)
 			return
 		}
 		sess.handleDisplayChange(clientMessage{

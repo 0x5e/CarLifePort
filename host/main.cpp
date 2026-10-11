@@ -1,13 +1,15 @@
 /*
- * carlife-host —— CarLife 车机侧协议栈的宿主进程。
+ * carlife-host -- host process for the CarLife head-unit-side protocol stack.
  *
- * 上游是 tools/usb-bridge 在 127.0.0.1 上开的六条 TCP 通道，本进程通过
- * libcarlifevehicle 与手机完成 CarLife 协议交互；下游把六条通道的数据
- * 以带长度前缀的帧写到 AF_UNIX socket，供 Go 后端消费，并从同一 socket
- * 接收命令回写到手机。
+ * Upstream are the six TCP channels that tools/usb-bridge opens on 127.0.0.1;
+ * this process exchanges CarLife protocol messages with the phone through
+ * libcarlifevehicle. Downstream it writes the data of the six channels to an
+ * AF_UNIX socket as length-prefixed frames for the Go backend to consume, and
+ * receives commands from the same socket to forward back to the phone.
  *
- * 进程模型：主线程负责 accept/读命令；cmd/video/audio/tts/vr 各一条接收
- * 线程跑库的阻塞式 xxxReceiveOperation()。
+ * Process model: the main thread handles accept and command reads; one receive
+ * thread each for cmd/video/audio/tts/vr runs the library's blocking
+ * xxxReceiveOperation().
  */
 #include "CCarLifeLibWrapper.h"
 #include "protocol.h"
@@ -30,19 +32,19 @@
 
 using namespace CCarLifeLibH;
 
-/* ------------------------------------------------------------------ 全局 */
+/* ----------------------------------------------------------------- Globals */
 
 static int g_listen_fd = -1;
 static int g_client_fd = -1;
 static pthread_mutex_t g_send_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* connectionSetup() 的返回码，0 表示六条通道都已建立 */
+/* Return code of connectionSetup(); 0 means all six channels are established */
 static int g_connection_result = -1;
 
 static int g_quiet = 0;
 static int g_verbose = 0;
 
-/* ------------------------------------------------------------- 日志与工具 */
+/* -------------------------------------------------------- Logging and utils */
 
 static void log_line(const char* fmt, ...)
 {
@@ -115,14 +117,15 @@ static std::string json_quote(const std::string& value)
     return out;
 }
 
-/* ------------------------------------------------------------ socket 输出 */
+/* ---------------------------------------------------------- Socket output */
 
 static int write_all(int fd, const uint8_t* data, size_t len)
 {
     size_t offset = 0;
     while (offset < len) {
-        // 库的头文件里有 using namespace std，必须显式用全局作用域调用系统接口，
-        // 否则 bind/send 这类名字会与标准库同名函数冲突。
+        // The library headers pull in "using namespace std", so system calls
+        // must be invoked with explicit global scope; otherwise names like
+        // bind/send collide with same-named standard library functions.
         ssize_t written = ::send(fd, data + offset, len - offset, MSG_NOSIGNAL);
         if (written <= 0) {
             return 0;
@@ -132,7 +135,8 @@ static int write_all(int fd, const uint8_t* data, size_t len)
     return 1;
 }
 
-/* 向当前客户端发一帧。分片写由发送锁串行化，避免多通道交错。 */
+/* Send one frame to the current client. Partial writes are serialized by the
+ * send lock to avoid interleaving across channels. */
 static void send_frame(uint8_t channel, uint8_t tag, const void* data, uint32_t len)
 {
     uint8_t header[CL_FRAME_HEADER + 1];
@@ -145,7 +149,7 @@ static void send_frame(uint8_t channel, uint8_t tag, const void* data, uint32_t 
     int fd = g_client_fd;
     if (fd >= 0) {
         if (!write_all(fd, header, sizeof(header)) || (len > 0 && !write_all(fd, (const uint8_t*)data, len))) {
-            log_line("写入客户端失败：%s", strerror(errno));
+            log_line("failed to write to client: %s", strerror(errno));
         }
     }
     pthread_mutex_unlock(&g_send_lock);
@@ -156,7 +160,8 @@ static void send_text(uint8_t tag, const std::string& text)
     send_frame(CH_CMD, tag, text.data(), (uint32_t)text.size());
 }
 
-/* 上报车机通道状态；客户端接入时以及状态发生变化时各发一次 */
+/* Report head-unit channel status; sent once when a client connects and once on
+ * each status change */
 static void broadcast_status(void)
 {
     uint8_t status[5];
@@ -165,8 +170,9 @@ static void broadcast_status(void)
     send_frame(CH_CMD, EV_STATUS, status, sizeof(status));
 }
 
-/* 等 usb-bridge 在命令通道端口上开始监听。探测连接会立刻关闭，
- * 桥接层会重新 accept，不会占用正式通道。 */
+/* Wait for usb-bridge to start listening on the command channel port. The
+ * probe connection is closed immediately; the bridge accepts again and the
+ * real channel is not occupied. */
 static int wait_for_bridge(int port, int timeout_seconds)
 {
     for (int elapsed = 0; elapsed < timeout_seconds; ++elapsed) {
@@ -184,21 +190,21 @@ static int wait_for_bridge(int port, int timeout_seconds)
             }
         }
         if (elapsed % 5 == 0) {
-            log_line("等待 usb-bridge 在 127.0.0.1:%d 就绪…", port);
+            log_line("waiting for usb-bridge to become ready on 127.0.0.1:%d...", port);
         }
         sleep(1);
     }
     return 0;
 }
 
-/* ---------------------------------------------------- 命令通道回调（手机->车机） */
+/* --------------------------------------------- Command channel callbacks (phone -> head unit) */
 
 static void cb_protocol_match(S_PROTOCOL_VERSION_MATCH_SATUS* status)
 {
     uint8_t buffer[4];
     put_be32(buffer, status->matchStatus);
     send_frame(CH_CMD, EV_PROTOCOL_MATCH, buffer, sizeof(buffer));
-    log_line("协议版本匹配状态：%u", status->matchStatus);
+    log_line("protocol version match status: %u", status->matchStatus);
 }
 
 static void cb_md_info(S_MD_INFO* info)
@@ -235,13 +241,13 @@ static void cb_md_info(S_MD_INFO* info)
     json += json_quote(info->btaddress);
     json += "}";
     send_text(EV_MD_INFO, json);
-    log_line("手机设备信息：%s %s (Android %s)", info->manufacturer.c_str(), info->model.c_str(),
+    log_line("phone device info: %s %s (Android %s)", info->manufacturer.c_str(), info->model.c_str(),
              info->release.c_str());
 }
 
 static void cb_md_bt_pair_info(S_BT_PAIR_INFO* info)
 {
-    log_line("蓝牙配对信息：name=%s status=%u", info->name.c_str(), info->status);
+    log_line("bluetooth pairing info: name=%s status=%u", info->name.c_str(), info->status);
 }
 
 static void cb_video_encoder_init_done(S_VIDEO_ENCODER_INIT_DONE* info)
@@ -251,7 +257,7 @@ static void cb_video_encoder_init_done(S_VIDEO_ENCODER_INIT_DONE* info)
     put_be32(buffer + 4, info->height);
     put_be32(buffer + 8, info->frameRate);
     send_frame(CH_CMD, EV_VIDEO_INIT_DONE, buffer, sizeof(buffer));
-    log_line("视频编码器就绪：%ux%u@%u", info->width, info->height, info->frameRate);
+    log_line("video encoder ready: %ux%u@%u", info->width, info->height, info->frameRate);
 }
 
 static void cb_video_frame_rate_done(S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE* info)
@@ -259,7 +265,7 @@ static void cb_video_frame_rate_done(S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE* inf
     uint8_t buffer[4];
     put_be32(buffer, info->frameRate);
     send_frame(CH_CMD, EV_VIDEO_FPS_DONE, buffer, sizeof(buffer));
-    log_line("帧率已切换：%u", info->frameRate);
+    log_line("frame rate changed: %u", info->frameRate);
 }
 
 static void cb_tele_state(uint8_t state)
@@ -287,53 +293,53 @@ static void cb_tele_in_calling(void)
 static void cb_screen_on(void)
 {
     send_frame(CH_CMD, EV_SCREEN_ON, NULL, 0);
-    log_line("手机屏幕点亮");
+    log_line("phone screen on");
 }
 
 static void cb_screen_off(void)
 {
     send_frame(CH_CMD, EV_SCREEN_OFF, NULL, 0);
-    log_line("手机屏幕熄灭");
+    log_line("phone screen off");
 }
 
 static void cb_screen_user_present(void)
 {
-    log_line("手机检测到用户在场");
+    log_line("phone detected user present");
 }
 
 static void cb_foreground(void)
 {
     send_frame(CH_CMD, EV_FOREGROUND, NULL, 0);
-    log_line("CarLife 切到前台");
+    log_line("CarLife moved to foreground");
 }
 
 static void cb_background(void)
 {
     send_frame(CH_CMD, EV_BACKGROUND, NULL, 0);
-    log_line("CarLife 切到后台");
+    log_line("CarLife moved to background");
 }
 
 static void cb_go_to_desktop(void)
 {
-    log_line("手机回到桌面");
+    log_line("phone returned to home screen");
 }
 
 static void cb_mic_wakeup(void)
 {
     send_frame(CH_CMD, EV_MIC_WAKEUP, NULL, 0);
-    log_line("语音唤醒");
+    log_line("voice wakeup");
 }
 
 static void cb_mic_end(void)
 {
     send_frame(CH_CMD, EV_MIC_END, NULL, 0);
-    log_line("语音录制结束");
+    log_line("voice recording ended");
 }
 
 static void cb_mic_recog(void)
 {
     send_frame(CH_CMD, EV_MIC_RECOG, NULL, 0);
-    log_line("语音识别开始");
+    log_line("voice recognition started");
 }
 
 static void cb_module_status(S_MODULE_STATUS_LIST_MOBILE* list)
@@ -356,10 +362,11 @@ static void cb_module_status(S_MODULE_STATUS_LIST_MOBILE* list)
 
 static void cb_navi_next_turn(S_NAVI_NEXT_TURN_INFO* info)
 {
-    log_line("导航转向提示：action=%u nextTurn=%u road=%s", info->action, info->nextTurn, info->roadName.c_str());
+    log_line("navigation turn prompt: action=%u nextTurn=%u road=%s", info->action, info->nextTurn, info->roadName.c_str());
 }
 
-/* 手机请求特性配置时按库自带参考实现回一份 FOCUS_UI，否则手机侧会一直等 */
+/* On a feature config request from the phone, reply with FOCUS_UI following the
+ * library's bundled reference implementation; otherwise the phone keeps waiting */
 static S_FEATURE_CONFIG_LIST g_feature_config_list;
 static S_FEATURE_CONFIG g_feature_config_focus_ui;
 
@@ -373,16 +380,16 @@ static void cb_feature_config_request(void)
     CCarLifeLib::getInstance()->cmdFeatureConfigResponse(&g_feature_config_list);
 
     send_frame(CH_CMD, EV_FEATURE_CONFIG_REQUEST, NULL, 0);
-    log_line("已回复手机的特性配置请求（FOCUS_UI=1）");
+    log_line("replied to phone feature config request (FOCUS_UI=1)");
 }
 
 static void cb_md_exit(void)
 {
     send_frame(CH_CMD, EV_MD_EXIT, NULL, 0);
-    log_line("手机端 CarLife 退出");
+    log_line("CarLife exited on phone");
 }
 
-/* ---------------------------------------------------------------- 音视频通道 */
+/* ------------------------------------------------------- Audio/video channels */
 
 static void send_audio_init(uint8_t channel, S_AUDIO_INIT_PARAMETER* param)
 {
@@ -391,7 +398,7 @@ static void send_audio_init(uint8_t channel, S_AUDIO_INIT_PARAMETER* param)
     put_be32(buffer + 4, param->channelConfig);
     put_be32(buffer + 8, param->sampleFormat);
     send_frame(channel, EV_AUDIO_INIT, buffer, sizeof(buffer));
-    log_line("通道 %u 音频参数：%u Hz / config %u / format %u", channel, param->sampleRate,
+    log_line("channel %u audio params: %u Hz / config %u / format %u", channel, param->sampleRate,
              param->channelConfig, param->sampleFormat);
 }
 
@@ -461,7 +468,7 @@ static void cb_ctrl_ui_action_sound(void)
     send_frame(CH_CTRL, EV_CTRL_UI_ACTION_SOUND, NULL, 0);
 }
 
-/* ------------------------------------------------------------ 通道接收线程 */
+/* ------------------------------------------------- Channel receive threads */
 
 static void* cmd_receive_thread(void*)
 {
@@ -491,7 +498,7 @@ static void* cmd_receive_thread(void*)
 
     while (lib->cmdReceiveOperation() != -1) {
     }
-    log_line("命令通道接收线程退出");
+    log_line("command channel receive thread exiting");
     return NULL;
 }
 
@@ -503,7 +510,7 @@ static void* video_receive_thread(void*)
 
     while (lib->videoReceiveOperation() != -1) {
     }
-    log_line("视频通道接收线程退出");
+    log_line("video channel receive thread exiting");
     return NULL;
 }
 
@@ -519,7 +526,7 @@ static void* media_receive_thread(void*)
 
     while (lib->mediaReceiveOperation() != -1) {
     }
-    log_line("音频通道接收线程退出");
+    log_line("audio channel receive thread exiting");
     return NULL;
 }
 
@@ -532,7 +539,7 @@ static void* tts_receive_thread(void*)
 
     while (lib->ttsReceiveOperation() != -1) {
     }
-    log_line("导航播报通道接收线程退出");
+    log_line("navigation TTS channel receive thread exiting");
     return NULL;
 }
 
@@ -545,7 +552,7 @@ static void* vr_receive_thread(void*)
 
     while (lib->vrReceiveOperation() != -1) {
     }
-    log_line("语音通道接收线程退出");
+    log_line("voice channel receive thread exiting");
     return NULL;
 }
 
@@ -556,11 +563,11 @@ static void* ctrl_receive_thread(void*)
 
     while (lib->ctrlReceiveOperation() != -1) {
     }
-    log_line("控制通道接收线程退出");
+    log_line("control channel receive thread exiting");
     return NULL;
 }
 
-/* ---------------------------------------------------------------- 命令分发 */
+/* --------------------------------------------------------- Command dispatch */
 
 static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t length)
 {
@@ -582,7 +589,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             version.majorVersion = get_be32(body);
             version.minorVersion = get_be32(body + 4);
             lib->cmdHUProtoclVersion(&version);
-            log_line("发送协议版本 %u.%u", version.majorVersion, version.minorVersion);
+            log_line("sending protocol version %u.%u", version.majorVersion, version.minorVersion);
             break;
         }
         case CMD_VIDEO_ENCODER_INIT: {
@@ -594,24 +601,24 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             param.height = get_be32(body + 4);
             param.frameRate = get_be32(body + 8);
             lib->cmdVideoEncoderInit(&param);
-            log_line("请求视频编码 %ux%u@%u", param.width, param.height, param.frameRate);
+            log_line("requesting video encoding %ux%u@%u", param.width, param.height, param.frameRate);
             break;
         }
         case CMD_VIDEO_ENCODER_START:
             lib->cmdVideoEncoderStart();
-            log_line("启动视频编码");
+            log_line("starting video encoder");
             break;
         case CMD_VIDEO_ENCODER_PAUSE:
             lib->cmdVideoEncoderPause();
-            log_line("暂停视频编码");
+            log_line("pausing video encoder");
             break;
         case CMD_VIDEO_ENCODER_RESET:
             lib->cmdVideoEncoderReset();
-            log_line("复位视频编码");
+            log_line("resetting video encoder");
             break;
         case CMD_GO_TO_FOREGROUND:
             lib->cmdGoToForeground();
-            log_line("请求手机切到前台");
+            log_line("requesting phone to move to foreground");
             break;
         case CMD_LAUNCH_MODE_NORMAL:
             lib->cmdLaunchModeNormal();
@@ -626,7 +633,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             lib->cmdLaunchModeMusic();
             break;
         default:
-            log_line("未知命令通道指令 tag=%u", tag);
+            log_line("unknown command channel tag=%u", tag);
             break;
         }
         return;
@@ -712,11 +719,11 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_TOUCH_CAR_HARD_KEY_CODE key;
             key.keycode = get_be32(body);
             lib->ctrlTouchCarHardKeyCode(&key);
-            log_line("发送硬按键 0x%08X", key.keycode);
+            log_line("sending hard key 0x%08X", key.keycode);
             break;
         }
         default:
-            log_line("未知控制通道指令 tag=%u", tag);
+            log_line("unknown control channel tag=%u", tag);
             break;
         }
         return;
@@ -731,11 +738,11 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             lib->sendVRRecordData((u8*)(body + 4), body_length - 4, timestamp);
             return;
         }
-        log_line("未知语音通道指令 tag=%u", tag);
+        log_line("unknown voice channel tag=%u", tag);
     }
 }
 
-/* ------------------------------------------------------------ socket 服务 */
+/* ------------------------------------------------------------ Socket server */
 
 static int read_all(int fd, uint8_t* buffer, size_t length)
 {
@@ -764,7 +771,7 @@ static void serve_client(int fd)
         uint8_t channel = header[0];
         uint32_t payload_length = get_be32(header + 1);
         if (payload_length == 0 || payload_length > CL_MAX_PAYLOAD) {
-            log_line("收到非法帧：channel=%u length=%u", channel, payload_length);
+            log_line("invalid frame received: channel=%u length=%u", channel, payload_length);
             break;
         }
         payload.resize(payload_length);
@@ -780,7 +787,7 @@ static int listen_unix(const char* path)
     ::unlink(path);
     int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
-        log_line("创建 socket 失败：%s", strerror(errno));
+        log_line("failed to create socket: %s", strerror(errno));
         return -1;
     }
     struct sockaddr_un address;
@@ -788,12 +795,12 @@ static int listen_unix(const char* path)
     address.sun_family = AF_UNIX;
     strncpy(address.sun_path, path, sizeof(address.sun_path) - 1);
     if (::bind(fd, (struct sockaddr*)&address, sizeof(address)) != 0) {
-        log_line("绑定 %s 失败：%s", path, strerror(errno));
+        log_line("failed to bind %s: %s", path, strerror(errno));
         ::close(fd);
         return -1;
     }
     if (::listen(fd, 4) != 0) {
-        log_line("监听失败：%s", strerror(errno));
+        log_line("failed to listen: %s", strerror(errno));
         ::close(fd);
         return -1;
     }
@@ -804,7 +811,7 @@ static void start_thread(void* (*entry)(void*), const char* name)
 {
     pthread_t thread;
     if (pthread_create(&thread, NULL, entry, NULL) != 0) {
-        log_line("%s 线程创建失败", name);
+        log_line("failed to create %s thread", name);
         return;
     }
     pthread_detach(thread);
@@ -813,14 +820,14 @@ static void start_thread(void* (*entry)(void*), const char* name)
 static void usage(const char* program)
 {
     fprintf(stderr,
-            "用法：%s [选项]\n"
+            "Usage: %s [options]\n"
             "\n"
-            "  --socket <路径>   Unix socket 路径（默认 %s）\n"
-            "  -q, --quiet       不打印本进程的运行日志\n"
-            "  -v, --verbose     连协议栈内部日志一起输出（默认丢弃）\n"
-            "  -h, --help        显示本帮助\n"
+            "  --socket <path>   Unix socket path (default %s)\n"
+            "  -q, --quiet       do not print this process's runtime logs\n"
+            "  -v, --verbose     also emit the protocol stack's internal logs (discarded by default)\n"
+            "  -h, --help        show this help\n"
             "\n"
-            "启动顺序：先 tools/usb-bridge，再本进程，最后 server/carlifed。\n",
+            "Startup order: tools/usb-bridge first, then this process, then server/carlifed.\n",
             program, CL_DEFAULT_SOCKET);
 }
 
@@ -838,33 +845,35 @@ int main(int argc, char** argv)
             usage(argv[0]);
             return 0;
         } else {
-            fprintf(stderr, "未知参数：%s\n", argv[i]);
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
             usage(argv[0]);
             return 2;
         }
     }
 
-    /* 协议栈对每条消息都打一行日志，视频帧也不例外，正常运行时会淹掉终端；
-     * 除非显式要求，否则把它整个丢掉，只留本进程的诊断输出（走 stderr）。 */
+    /* The protocol stack logs one line per message, video frames included,
+     * which floods the terminal in normal operation; unless explicitly
+     * requested, discard it entirely and keep only this process's diagnostics
+     * (on stderr). */
     if (!g_verbose) {
         freopen("/dev/null", "w", stdout);
     }
 
-    /* 对端先断时不要被 SIGPIPE 带走 */
+    /* Do not get killed by SIGPIPE when the peer disconnects first */
     signal(SIGPIPE, SIG_IGN);
 
     g_listen_fd = listen_unix(socket_path);
     if (g_listen_fd < 0) {
         return 1;
     }
-    log_line("监听 %s", socket_path);
+    log_line("listening on %s", socket_path);
 
     if (!wait_for_bridge(CL_BRIDGE_PORT, 120)) {
-        log_line("等待 usb-bridge 超时（127.0.0.1:%d）。请先启动 tools/usb-bridge 再运行本进程。",
+        log_line("timed out waiting for usb-bridge (127.0.0.1:%d). Start tools/usb-bridge before running this process.",
                  CL_BRIDGE_PORT);
         return 1;
     }
-    log_line("usb-bridge 已就绪");
+    log_line("usb-bridge is ready");
 
     CCarLifeLib* lib = CCarLifeLib::getInstance();
     lib->carLifeLibInit();
@@ -874,23 +883,23 @@ int main(int argc, char** argv)
         if (g_connection_result == 0) {
             break;
         }
-        log_line("第 %d 次建立通道失败（返回码 %d），1 秒后重试", attempt, g_connection_result);
+        log_line("channel setup attempt %d failed (return code %d), retrying in 1 second", attempt, g_connection_result);
         sleep(1);
     }
     if (g_connection_result != 0) {
-        log_line("无法建立通道，退出。请确认 usb-bridge 正在运行。");
+        log_line("failed to establish channels, exiting. Make sure usb-bridge is running.");
         return 1;
     }
-    log_line("六条通道已连接（127.0.0.1 本地端口）");
+    log_line("all six channels connected (127.0.0.1 local ports)");
 
-    start_thread(cmd_receive_thread, "命令通道");
-    start_thread(video_receive_thread, "视频通道");
-    start_thread(media_receive_thread, "音频通道");
-    start_thread(tts_receive_thread, "播报通道");
-    start_thread(vr_receive_thread, "语音通道");
-    start_thread(ctrl_receive_thread, "控制通道");
+    start_thread(cmd_receive_thread, "command channel");
+    start_thread(video_receive_thread, "video channel");
+    start_thread(media_receive_thread, "audio channel");
+    start_thread(tts_receive_thread, "TTS channel");
+    start_thread(vr_receive_thread, "voice channel");
+    start_thread(ctrl_receive_thread, "control channel");
 
-    log_line("就绪，等待 Go 后端接入");
+    log_line("ready, waiting for the Go backend to connect");
 
     for (;;) {
         struct sockaddr_un peer;
@@ -900,7 +909,7 @@ int main(int argc, char** argv)
             if (errno == EINTR) {
                 continue;
             }
-            log_line("accept 失败：%s", strerror(errno));
+            log_line("accept failed: %s", strerror(errno));
             break;
         }
 
@@ -910,7 +919,7 @@ int main(int argc, char** argv)
         }
         g_client_fd = fd;
         pthread_mutex_unlock(&g_send_lock);
-        log_line("Go 后端已接入");
+        log_line("Go backend connected");
 
         broadcast_status();
 
@@ -922,7 +931,7 @@ int main(int argc, char** argv)
         }
         pthread_mutex_unlock(&g_send_lock);
         ::close(fd);
-        log_line("Go 后端已断开，继续等待重连");
+        log_line("Go backend disconnected, waiting for reconnect");
     }
 
     ::close(g_listen_fd);

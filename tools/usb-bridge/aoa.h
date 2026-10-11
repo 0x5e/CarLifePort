@@ -1,14 +1,15 @@
 /*
- * aoa.h — CarLife 车机端 AOA（Android Open Accessory）USB 传输层
+ * aoa.h — CarLife head-unit AOA (Android Open Accessory) USB transport layer
  *
- * 把 Android 手机切到 AOA accessory 模式，并在单条 USB 通道上收发 CarLife 帧。
+ * Switch an Android phone into AOA accessory mode and send/receive CarLife frames
+ * over a single USB channel.
  *
- * USB 帧结构（全大端）：
- *   [4B channelId][4B totalLen][CarLife 消息]
- * channelId 1..6 = cmd/video/audio/tts/vr/touch；
- * totalLen = CarLife 消息头长度 + 消息体长度（不含本 8B 头）。
+ * USB frame layout (all big-endian):
+ *   [4B channelId][4B totalLen][CarLife message]
+ * channelId 1..6 = cmd/video/audio/tts/vr/touch;
+ * totalLen = CarLife message head length + message body length (excludes this 8B head).
  *
- * 本模块只负责 USB 传输，不解析 CarLife 消息语义。
+ * This module handles USB transport only; it does not parse CarLife message semantics.
  */
 #ifndef CARLIFE_AOA_H
 #define CARLIFE_AOA_H
@@ -17,13 +18,14 @@
 
 #include <libusb.h>
 
-/* 进程级停止标志。由宿主（bridge.c）定义并在信号处理里置位，本模块只读取。 */
+/* Process-wide stop flag. Defined by the host (bridge.c) and set in its signal
+ * handler; this module only reads it. */
 extern volatile sig_atomic_t aoa_stop;
 
 #define AOA_CHANNEL_COUNT 6
 #define AOA_HEAD_LEN 8
 
-/* 一条 CarLife 消息的最大长度（video 通道上限 600KB + 12B 头） */
+/* Maximum length of one CarLife message (video channel cap 600KB + 12B head) */
 #define AOA_MSG_MAX (640u * 1024u)
 
 struct aoa_device {
@@ -37,43 +39,45 @@ struct aoa_device {
     unsigned char address;
 };
 
-/* 带时间戳的日志，输出到 stderr */
+/* Timestamped log, written to stderr */
 void aoa_log(const char *fmt, ...);
 
 int aoa_init(void);
 void aoa_fini(void);
 
-/* 枚举并打印所有 USB 设备（不触碰任何设备） */
+/* Enumerate and print all USB devices (does not touch any device) */
 void aoa_list_devices(void);
 
-/* 挑选并打开目标设备，不改变其 USB 状态。
- * want_vid / want_pid 为 -1 表示自动挑选。
- * 成功返回 0；*is_accessory 表示设备是否已处于 accessory 模式。 */
+/* Pick and open the target device without changing its USB state.
+ * want_vid / want_pid = -1 means auto-pick.
+ * Returns 0 on success; *is_accessory reports whether the device is already in accessory mode. */
 int aoa_open_target(int want_vid, int want_pid, struct aoa_device *out, int *is_accessory,
                     int verbose);
 
-/* 发送 AOA 标识请求 51/52（+ 53）。do_start=0 时不发 53，手机 USB 状态不变。
- * 内部会 claim/release 接口 0。返回 0 成功。 */
+/* Send AOA identify requests 51/52 (+ 53). With do_start=0, 53 is not sent and the
+ * phone USB state is unchanged. Internally claims/releases interface 0. Returns 0 on success. */
 int aoa_handshake(struct aoa_device *d, int do_start);
 
-/* 等待设备以 accessory 模式重新枚举并打开。返回 0 成功。 */
+/* Wait for the device to re-enumerate in accessory mode and open it. Returns 0 on success. */
 int aoa_wait_accessory(int want_vid, int want_pid, struct aoa_device *out);
 
-/* 等 prev 描述的节点完成 USB 逻辑插拔（发过 53 之后调用）。 */
+/* Wait for the node described by prev to complete its USB re-enumeration
+ * (called after 53 has been sent). */
 int aoa_wait_rebind(const struct aoa_device *prev);
 
-/* 在 accessory 接口（class 0xff / subclass 0xff）上找 bulk 端点并 claim 接口。 */
+/* Find the bulk endpoints on the accessory interface (class 0xff / subclass 0xff) and claim it. */
 int aoa_claim_accessory(struct aoa_device *d);
 
-/* release 接口并关闭设备 */
+/* Release the interface and close the device */
 void aoa_close(struct aoa_device *d);
 
-/* 发送一条完整的 CarLife 消息：加 8B AOA 头、按 16KB 分片调用 bulk transfer。
- * 调用方负责串行化（同一设备不可并发调用）。返回 0 成功，否则为负的 libusb 错误码。 */
+/* Send one full CarLife message: prepend the 8B AOA head, call bulk transfer in 16KB chunks.
+ * The caller is responsible for serialization (never call concurrently on the same device).
+ * Returns 0 on success, otherwise a negative libusb error code. */
 int aoa_send_message(struct aoa_device *d, unsigned int channel, const unsigned char *msg,
                      unsigned int len);
 
-/* 读满 len 字节。返回 0 成功、1 已请求停止、-1 出错。 */
+/* Read exactly len bytes. Returns 0 on success, 1 if stop was requested, -1 on error. */
 int aoa_read_exact(struct aoa_device *d, unsigned char *dst, unsigned int len);
 
 #endif /* CARLIFE_AOA_H */

@@ -1,4 +1,4 @@
-/** 二进制帧格式与服务端 server/wire.go 对应；控制消息为 JSON。 */
+/** Binary frame format, mirrors server/wire.go; control messages are JSON. */
 
 export const WireType = {
   VideoConfig: 1,
@@ -64,7 +64,7 @@ export type WireMessage =
   | ScreenActiveMessage
   | AudioStoppedMessage;
 
-/** 车机硬按键：名称对应服务端 hardKeyCodes 表。 */
+/** Head-unit hard keys; names match the server-side hardKeyCodes table. */
 export type HardKey =
   | 'up' | 'down' | 'left' | 'right'
   | 'ok' | 'back' | 'home'
@@ -90,7 +90,7 @@ export interface ServerMessage {
   message?: string;
 }
 
-/** 把一条二进制 WebSocket 负载解析成有类型的 wire 消息。 */
+/** Parse one binary WebSocket payload into a typed wire message. */
 export function parseWireMessage(buffer: ArrayBuffer): WireMessage | null {
   if (buffer.byteLength < 2) return null;
   const view = new DataView(buffer);
@@ -149,7 +149,7 @@ export function parseWireMessage(buffer: ArrayBuffer): WireMessage | null {
   }
 }
 
-/** 把 Annex B 的 NAL 流转换成 4 字节长度前缀的 AVCC 单元。 */
+/** Convert an Annex B NAL stream into 4-byte length-prefixed AVCC units. */
 export function annexBToAvcc(data: Uint8Array): Uint8Array {
   const units: Array<{ offset: number; length: number }> = [];
   let index = 0;
@@ -204,7 +204,7 @@ export function annexBToAvcc(data: Uint8Array): Uint8Array {
   return output;
 }
 
-/** 根据 AVCDecoderConfigurationRecord 拼出 WebCodecs 需要的 codec 字符串。 */
+/** Build the codec string WebCodecs needs from an AVCDecoderConfigurationRecord. */
 export function avcCodecString(avcC: Uint8Array): string {
   if (avcC.length < 4) return 'avc1.42E01E';
   const hex = (value: number) => value.toString(16).padStart(2, '0');

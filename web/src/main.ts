@@ -6,7 +6,7 @@ import { Connection, type ConnectionState } from './ws';
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
-  if (!element) throw new Error(`缺少 #${id} 元素`);
+  if (!element) throw new Error(`missing #${id} element`);
   return element as T;
 }
 
@@ -59,7 +59,7 @@ const video = new VideoPlayer(
     app.dataset.session = 'live';
     viewerState.textContent = 'LIVE';
   },
-  // CarLife 没有“请求关键帧”这条命令，解码卡住时只能等下一帧。
+  // CarLife has no request-keyframe command, so a stalled decoder can only wait for the next frame.
   () => {},
   (width, height) => {
     streamWidth = width;
@@ -194,7 +194,7 @@ function clickButton(id: string, handler: () => void): void {
   });
 }
 
-/* --------------------------------------------------------------- 车机控制条 */
+/* ---------------------------------------------------------- remote control bar */
 
 const remoteButtons: Array<[string, HardKey]> = [
   ['btn-up', 'up'],
@@ -257,7 +257,7 @@ clickButton('btn-exit-focus', toggleFocus);
 clickButton('btn-error-close', () => showError(''));
 clickButton('btn-viewer', () => canvas.focus());
 
-/* ------------------------------------------------------------------ 音量 */
+/* ------------------------------------------------------------------- volume */
 
 muteButton.addEventListener('click', () => {
   muted = !muted;
@@ -271,7 +271,7 @@ async function unlockAudio(): Promise<void> {
     audioUnlocked = true;
     requiredElement('audio-unlock-hint').hidden = true;
   } catch {
-    // 下一次手势再试。
+    // Retry on the next user gesture.
   }
 }
 
@@ -303,7 +303,7 @@ quickVolume.addEventListener('input', () => {
   audioMaster.dispatchEvent(new Event('input'));
 });
 
-/* -------------------------------------------------------------- 画面设置 */
+/* --------------------------------------------------------- display settings */
 
 interface DisplayPreset {
   width: number;
@@ -371,7 +371,7 @@ async function refreshDisplayInfo(): Promise<void> {
   displayStatus.textContent = '正在读取当前画面设置…';
   try {
     const response = await fetch('/api/display');
-    if (!response.ok) throw new Error(`请求失败（${response.status}）`);
+    if (!response.ok) throw new Error(`request failed (${response.status})`);
     const info = (await response.json()) as DisplayInfo;
     renderPresets(info.presets);
     displayWidthInput.value = String(info.width);
@@ -425,7 +425,7 @@ displayForm.addEventListener('submit', (event) => {
   void applyDisplay();
 });
 
-/* -------------------------------------------------------------- 声音面板 */
+/* ------------------------------------------------------------- audio panel */
 
 const audioPanel = requiredElement<HTMLDialogElement>('audio-panel');
 const audioStreams = requiredElement<HTMLDivElement>('audio-streams');
@@ -503,7 +503,7 @@ for (const [panel, trigger] of [
   requiredElement(trigger).addEventListener('click', () => requiredElement(trigger).classList.add('active'));
 }
 
-/* ---------------------------------------------------------------- 状态栏 */
+/* -------------------------------------------------------------- status bar */
 
 let statsTick = performance.now();
 

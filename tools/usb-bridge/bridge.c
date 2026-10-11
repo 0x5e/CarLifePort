@@ -1,27 +1,31 @@
 /*
- * bridge.c — CarLife 车机端 USB(AOA) ↔ 本地 TCP 通道桥接
+ * bridge.c — CarLife head-unit USB(AOA) <-> local TCP channel bridge
  *
- * 结构：手机 ←USB(AOA)→ 本进程 ←TCP(127.0.0.1)→ CarLifeVehicleLib
+ * Structure: phone <-USB(AOA)-> this process <-TCP(127.0.0.1)-> CarLifeVehicleLib
  *
- * USB 上 6 个通道复用同一条 bulk 通道，每帧带 8B 头 [4B channelId][4B totalLen]（大端）。
- * 本地为每个通道开一个 TCP 监听端口，与 CarLifeVehicleLib 的 CMD_SOCKET_PORT_HU 系列一致：
+ * On USB, the 6 channels share a single bulk channel, each frame carrying an 8B head
+ * [4B channelId][4B totalLen] (big-endian).
+ * Locally, each channel gets a TCP listening port matching CarLifeVehicleLib's
+ * CMD_SOCKET_PORT_HU series:
  *
- *   channel 1 cmd   → 127.0.0.1:7200
- *   channel 2 video → 127.0.0.1:8200
- *   channel 3 audio → 127.0.0.1:9200
- *   channel 4 tts   → 127.0.0.1:9201
- *   channel 5 vr    → 127.0.0.1:9202
- *   channel 6 touch → 127.0.0.1:9300
+ *   channel 1 cmd   -> 127.0.0.1:7200
+ *   channel 2 video -> 127.0.0.1:8200
+ *   channel 3 audio -> 127.0.0.1:9200
+ *   channel 4 tts   -> 127.0.0.1:9201
+ *   channel 5 vr    -> 127.0.0.1:9202
+ *   channel 6 touch -> 127.0.0.1:9300
  *
- * socket 上跑的是裸 CarLife 消息（无 AOA 头），与 ADB 模式下的库行为一致：
- * 库按「消息头 + 消息体」两次 write 发送，因此本进程需要按消息头里的长度字段重新组包。
- * 消息头（全大端）：
- *   cmd(1) / touch(6)            : [2B bodyLen][2B 保留][4B serviceType]           共 8B
- *   video(2)/audio(3)/tts(4)/vr(5): [4B bodyLen][4B timestamp][4B serviceType]     共 12B
- * 见 CarLife-Vehicle-Lib/LibSource/core/CTranRecvPackageProcess.cpp 的
- * packageHeadAnalysis() / setPackageHeadDataSize() / setPackageHeadType()。
+ * A raw CarLife message (no AOA head) runs over the socket, matching the library's behavior
+ * in ADB mode: the library sends "message head + message body" as two writes, so this
+ * process must reassemble packets using the length field in the message head.
+ * Message head (all big-endian):
+ *   cmd(1) / touch(6)            : [2B bodyLen][2B reserved][4B serviceType]           total 8B
+ *   video(2)/audio(3)/tts(4)/vr(5): [4B bodyLen][4B timestamp][4B serviceType]         total 12B
+ * See packageHeadAnalysis() / setPackageHeadDataSize() / setPackageHeadType() in
+ * CarLife-Vehicle-Lib/LibSource/core/CTranRecvPackageProcess.cpp.
  *
- * 用法：先启动本进程（完成 AOA 握手并开始监听），再启动链接了 libcarlifevehicle 的车机程序。
+ * Usage: start this process first (completes the AOA handshake and begins listening), then
+ * start the head-unit program linked against libcarlifevehicle.
  */
 #include "aoa.h"
 
@@ -48,17 +52,17 @@ struct channel {
     const char *name;
     unsigned short port;
     int listen_fd;
-    int client_fd; /* -1 = 无客户端 */
+    int client_fd; /* -1 = no client */
     char peer[64];
-    pthread_mutex_t lock; /* 保护 client_fd / peer */
-    unsigned long long rx_frames; /* 本地 → USB */
+    pthread_mutex_t lock; /* guards client_fd / peer */
+    unsigned long long rx_frames; /* local -> USB */
     unsigned long long rx_bytes;
-    unsigned long long tx_frames; /* USB → 本地 */
+    unsigned long long tx_frames; /* USB -> local */
     unsigned long long tx_bytes;
-    unsigned long long dropped;   /* USB 收到但本地未连接 */
+    unsigned long long dropped;   /* received on USB but no local client connected */
 };
 
-static struct channel g_ch[AOA_CHANNEL_COUNT + 1]; /* 下标 1..6 */
+static struct channel g_ch[AOA_CHANNEL_COUNT + 1]; /* index 1..6 */
 static struct aoa_device g_dev;
 static pthread_mutex_t g_usb_tx_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_quiet = 0;
@@ -69,7 +73,7 @@ struct rx_arg {
     int fd;
 };
 
-/* ------------------------------------------------------------------ 线程计数 */
+/* ------------------------------------------------------------------ thread count */
 
 static void thread_enter(void)
 {
@@ -90,11 +94,11 @@ static void wait_threads(int timeout_ms)
         waited += 50;
     }
     if (g_busy_threads > 0) {
-        aoa_log("仍有 %d 个工作线程未退出，继续收尾", g_busy_threads);
+        aoa_log("still %d worker thread(s) not exited, continuing shutdown", g_busy_threads);
     }
 }
 
-/* ------------------------------------------------------------------ CarLife 消息头 */
+/* ------------------------------------------------------------------ CarLife message head */
 
 static unsigned int carlife_head_len(unsigned int ch)
 {
@@ -110,7 +114,7 @@ static unsigned int carlife_body_len(unsigned int ch, const unsigned char *head)
            ((unsigned int)head[2] << 8) | (unsigned int)head[3];
 }
 
-/* 各通道消息体上限，取自 CTranRecvPackageProcess.h 的 *_DATA_SIZE */
+/* Per-channel message body caps, from *_DATA_SIZE in CTranRecvPackageProcess.h */
 static unsigned int carlife_max_body(unsigned int ch)
 {
     switch (ch) {
@@ -131,7 +135,7 @@ static unsigned int carlife_max_body(unsigned int ch)
     }
 }
 
-/* ------------------------------------------------------------------ socket 收发 */
+/* ------------------------------------------------------------------ socket send/receive */
 
 static int read_socket_full(int fd, unsigned char *dst, unsigned int len)
 {
@@ -159,7 +163,7 @@ static int read_socket_full(int fd, unsigned char *dst, unsigned int len)
         }
         r = (int)recv(fd, dst + done, len - done, 0);
         if (r == 0) {
-            return -1; /* 对端关闭 */
+            return -1; /* peer closed */
         }
         if (r < 0) {
             if (errno == EINTR) {
@@ -193,7 +197,7 @@ static int write_socket_full(int fd, const unsigned char *src, unsigned int len)
     return 0;
 }
 
-/* ------------------------------------------------------------------ 本地 → USB */
+/* ------------------------------------------------------------------ local -> USB */
 
 static int ensure_cap(unsigned char **buf, size_t *cap, size_t need)
 {
@@ -211,7 +215,8 @@ static int ensure_cap(unsigned char **buf, size_t *cap, size_t need)
     return 0;
 }
 
-/* 每条通道一个线程：从 socket 读「消息头 + 消息体」组成一条完整消息，再发到 USB */
+/* One thread per channel: read "message head + message body" from the socket into one full
+ * message, then send it to USB */
 static void *channel_rx(void *param)
 {
     struct rx_arg *arg = (struct rx_arg *)param;
@@ -235,14 +240,14 @@ static void *channel_rx(void *param)
         }
         body = carlife_body_len(ch->id, head);
         if (body > carlife_max_body(ch->id)) {
-            aoa_log("%s：消息体长度 %u 超出上限 %u，断开该连接", ch->name, body,
+            aoa_log("%s: message body length %u exceeds the cap %u, dropping this connection", ch->name, body,
                     carlife_max_body(ch->id));
             report_disconnect = 0;
             break;
         }
         need = head_len + body;
         if (ensure_cap(&buf, &cap, need != 0 ? need : 1) != 0) {
-            aoa_log("%s：分配 %u 字节缓冲失败", ch->name, need);
+            aoa_log("%s: failed to allocate %u-byte buffer", ch->name, need);
             report_disconnect = 0;
             break;
         }
@@ -255,7 +260,7 @@ static void *channel_rx(void *param)
         r = aoa_send_message(&g_dev, ch->id, buf, need);
         pthread_mutex_unlock(&g_usb_tx_lock);
         if (r != 0) {
-            aoa_log("%s：发送到 USB 失败：%s", ch->name, libusb_error_name(r));
+            aoa_log("%s: send to USB failed: %s", ch->name, libusb_error_name(r));
             report_disconnect = 0;
             aoa_stop = 1;
             break;
@@ -270,7 +275,7 @@ static void *channel_rx(void *param)
         ch->peer[0] = '\0';
         pthread_mutex_unlock(&ch->lock);
         if (report_disconnect) {
-            aoa_log("%s：客户端已断开", ch->name);
+            aoa_log("%s: client disconnected", ch->name);
         }
     } else {
         pthread_mutex_unlock(&ch->lock);
@@ -282,7 +287,7 @@ static void *channel_rx(void *param)
     return NULL;
 }
 
-/* ------------------------------------------------------------------ 接受连接 */
+/* ------------------------------------------------------------------ accept connections */
 
 static void accept_one(struct channel *ch)
 {
@@ -306,15 +311,15 @@ static void accept_one(struct channel *ch)
     pthread_mutex_unlock(&ch->lock);
 
     if (old >= 0) {
-        aoa_log("%s：新连接 %s 取代旧连接", ch->name, ch->peer);
-        shutdown(old, SHUT_RDWR); /* 旧 rx 线程会自行退出并 close */
+        aoa_log("%s: new connection %s replaces the old one", ch->name, ch->peer);
+        shutdown(old, SHUT_RDWR); /* the old rx thread will exit and close on its own */
     } else {
-        aoa_log("%s：客户端已连接 %s", ch->name, ch->peer);
+        aoa_log("%s: client connected %s", ch->name, ch->peer);
     }
 
     arg = (struct rx_arg *)malloc(sizeof(*arg));
     if (arg == NULL) {
-        aoa_log("%s：分配线程参数失败", ch->name);
+        aoa_log("%s: failed to allocate thread argument", ch->name);
         pthread_mutex_lock(&ch->lock);
         ch->client_fd = -1;
         ch->peer[0] = '\0';
@@ -325,7 +330,7 @@ static void accept_one(struct channel *ch)
     arg->ch = ch;
     arg->fd = fd;
     if (pthread_create(&tid, NULL, channel_rx, arg) != 0) {
-        aoa_log("%s：创建接收线程失败", ch->name);
+        aoa_log("%s: failed to create receive thread", ch->name);
         pthread_mutex_lock(&ch->lock);
         ch->client_fd = -1;
         ch->peer[0] = '\0';
@@ -371,7 +376,7 @@ static void *accept_loop(void *unused)
     return NULL;
 }
 
-/* ------------------------------------------------------------------ USB → 本地 */
+/* ------------------------------------------------------------------ USB -> local */
 
 static int usb_rx_loop(void)
 {
@@ -381,7 +386,7 @@ static int usb_rx_loop(void)
     time_t last_report = 0;
     unsigned long long last_tx = 0, last_rx = 0, last_drop = 0;
 
-    aoa_log("开始转发（USB → 本地 / 本地 → USB），Ctrl-C 结束");
+    aoa_log("start forwarding (USB -> local / local -> USB), Ctrl-C to stop");
     if (!g_quiet) {
         time(&last_report);
     }
@@ -406,11 +411,11 @@ static int usb_rx_loop(void)
               ((unsigned int)aoa_head[6] << 8) | (unsigned int)aoa_head[7];
         head_total = carlife_head_len(ch_id);
         if (ch_id < 1 || ch_id > AOA_CHANNEL_COUNT || len < head_total || len > AOA_MSG_MAX) {
-            aoa_log("非法 AOA 帧头：channel=%u totalLen=%u", ch_id, len);
+            aoa_log("invalid AOA frame head: channel=%u totalLen=%u", ch_id, len);
             return -1;
         }
         if (ensure_cap(&buf, &cap, len) != 0) {
-            aoa_log("分配 %u 字节缓冲失败", len);
+            aoa_log("failed to allocate %u-byte buffer", len);
             return -1;
         }
         st = aoa_read_exact(&g_dev, buf, len);
@@ -433,7 +438,7 @@ static int usb_rx_loop(void)
             continue;
         }
         if (write_socket_full(fd, buf, len) != 0) {
-            aoa_log("%s：写入本地 socket 失败，断开该连接", ch->name);
+            aoa_log("%s: write to local socket failed, dropping this connection", ch->name);
             pthread_mutex_lock(&ch->lock);
             if (ch->client_fd == fd) {
                 shutdown(fd, SHUT_RDWR);
@@ -455,7 +460,7 @@ static int usb_rx_loop(void)
                 last_tx = tx_sum;
                 last_rx = rx_sum;
                 last_drop = drop_sum;
-                aoa_log("USB→本地 %llu 帧 ｜ 本地→USB %llu 帧 ｜ 未连接丢弃 %llu 帧", tx_sum, rx_sum,
+                aoa_log("USB->local %llu frames | local->USB %llu frames | dropped (no client) %llu frames", tx_sum, rx_sum,
                         drop_sum);
                 for (i = 1; i <= AOA_CHANNEL_COUNT; i++) {
                     if (g_ch[i].tx_frames == 0 && g_ch[i].rx_frames == 0 && g_ch[i].dropped == 0) {
@@ -463,14 +468,14 @@ static int usb_rx_loop(void)
                     }
                     aoa_log("    %-5s ↓%llu/%llu B  ↑%llu/%llu B%s", g_ch[i].name, g_ch[i].tx_frames,
                             g_ch[i].tx_bytes, g_ch[i].rx_frames, g_ch[i].rx_bytes,
-                            g_ch[i].client_fd < 0 ? "  (未连接)" : "");
+                            g_ch[i].client_fd < 0 ? "  (no client)" : "");
                 }
             }
         }
     }
 }
 
-/* ------------------------------------------------------------------ 启动 / 收尾 */
+/* ------------------------------------------------------------------ startup / shutdown */
 
 static int setup_listeners(const char *host)
 {
@@ -483,7 +488,7 @@ static int setup_listeners(const char *host)
 
         fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) {
-            aoa_log("%s：创建 socket 失败：%s", ch->name, strerror(errno));
+            aoa_log("%s: socket creation failed: %s", ch->name, strerror(errno));
             return -1;
         }
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -491,22 +496,22 @@ static int setup_listeners(const char *host)
         sa.sin_family = AF_INET;
         sa.sin_port = htons(ch->port);
         if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
-            aoa_log("无效的监听地址：%s", host);
+            aoa_log("invalid listen address: %s", host);
             close(fd);
             return -1;
         }
         if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
-            aoa_log("%s：绑定 %s:%u 失败：%s", ch->name, host, ch->port, strerror(errno));
+            aoa_log("%s: bind %s:%u failed: %s", ch->name, host, ch->port, strerror(errno));
             close(fd);
             return -1;
         }
         if (listen(fd, 1) != 0) {
-            aoa_log("%s：listen 失败：%s", ch->name, strerror(errno));
+            aoa_log("%s: listen failed: %s", ch->name, strerror(errno));
             close(fd);
             return -1;
         }
         ch->listen_fd = fd;
-        aoa_log("  监听 %s:%u  （%s）", host, ch->port, ch->name);
+        aoa_log("  listening on %s:%u  (%s)", host, ch->port, ch->name);
     }
     return 0;
 }
@@ -538,14 +543,14 @@ static void on_signal(int sig)
 
 static void usage(const char *argv0)
 {
-    printf("用法：%s [选项]\n", argv0);
-    printf("  --list                 只枚举 USB 设备，不触碰任何设备\n");
-    printf("  --force-handshake      当前已在 accessory 模式时仍重发 51/52/53\n");
-    printf("  --vid <0xXXXX>         指定目标设备的 VID\n");
-    printf("  --pid <0xXXXX>         指定目标设备的 PID\n");
-    printf("  --host <地址>          本地监听地址，默认 %s\n", DEFAULT_HOST);
-    printf("  --quiet                不输出周期性统计\n");
-    printf("  -h, --help             显示本帮助\n");
+    printf("usage: %s [options]\n", argv0);
+    printf("  --list                 list USB devices only, do not touch any device\n");
+    printf("  --force-handshake      resend 51/52/53 even if already in accessory mode\n");
+    printf("  --vid <0xXXXX>         target device VID\n");
+    printf("  --pid <0xXXXX>         target device PID\n");
+    printf("  --host <address>       local listen address, default %s\n", DEFAULT_HOST);
+    printf("  --quiet                suppress periodic statistics\n");
+    printf("  -h, --help             show this help\n");
 }
 
 static int parse_args(int argc, char **argv, int *vid, int *pid, const char **host,
@@ -576,7 +581,7 @@ static int parse_args(int argc, char **argv, int *vid, int *pid, const char **ho
             usage(argv[0]);
             exit(0);
         } else {
-            aoa_log("未知参数：%s", argv[i]);
+            aoa_log("unknown argument: %s", argv[i]);
             usage(argv[0]);
             return -1;
         }
@@ -623,30 +628,30 @@ int main(int argc, char **argv)
         return 1;
     }
     if (list_only) {
-        aoa_log("USB 设备列表：");
+        aoa_log("USB device list:");
         aoa_list_devices();
         aoa_fini();
         return 0;
     }
 
-    aoa_log("== 1. 枚举并挑选设备 ==");
+    aoa_log("== 1. enumerate and pick a device ==");
     rc = aoa_open_target(vid, pid, &g_dev, &is_accessory, !g_quiet);
     if (rc != 0) {
-        aoa_log("未找到可用设备：请确认手机已插上，且没有其它程序占用 USB（如 adb server、微信）");
+        aoa_log("no usable device found: make sure the phone is plugged in and no other program holds the USB device (e.g. adb server, WeChat)");
         aoa_fini();
         return 1;
     }
-    aoa_log("选中 %04x:%04x%s", g_dev.vid, g_dev.pid,
-            is_accessory ? "  [已处于 accessory 模式]" : "  [普通模式]");
+    aoa_log("selected %04x:%04x%s", g_dev.vid, g_dev.pid,
+            is_accessory ? "  [already in accessory mode]" : "  [normal mode]");
 
     if (is_accessory && !force_handshake) {
-        aoa_log("== 2. AOA 握手 ==\n  设备已处于 accessory 模式，跳过 51/52/53");
+        aoa_log("== 2. AOA handshake ==\n  device is already in accessory mode, skipping 51/52/53");
     } else {
         struct aoa_device prev = g_dev;
 
-        aoa_log("== 2. AOA 握手 ==");
+        aoa_log("== 2. AOA handshake ==");
         if (force_handshake && is_accessory) {
-            aoa_log("  --force-handshake：重发 51/52/53 覆盖手机上残留的描述符");
+            aoa_log("  --force-handshake: resending 51/52/53 to overwrite the stale descriptor on the phone");
         }
         if (aoa_handshake(&g_dev, 1) != 0) {
             aoa_close(&g_dev);
@@ -657,23 +662,23 @@ int main(int argc, char **argv)
         if (is_accessory) {
             aoa_wait_rebind(&prev);
         }
-        aoa_log("== 3. 等待 accessory 模式重新枚举 ==");
+        aoa_log("== 3. waiting for accessory mode re-enumeration ==");
         if (aoa_wait_accessory(vid, pid, &g_dev) != 0) {
-            aoa_log("AOA 握手已发出，但设备未以 accessory 模式重新出现");
+            aoa_log("AOA handshake was sent, but the device did not reappear in accessory mode");
             aoa_fini();
             return 1;
         }
     }
 
-    aoa_log("== 4. 准备 USB 端点 ==");
+    aoa_log("== 4. prepare USB endpoints ==");
     if (aoa_claim_accessory(&g_dev) != 0) {
         aoa_close(&g_dev);
         aoa_fini();
         return 1;
     }
-    aoa_log("  accessory 端点 IN=0x%02x OUT=0x%02x", g_dev.ep_in, g_dev.ep_out);
+    aoa_log("  accessory endpoints IN=0x%02x OUT=0x%02x", g_dev.ep_in, g_dev.ep_out);
 
-    aoa_log("== 5. 启动本地通道监听 ==");
+    aoa_log("== 5. start local channel listeners ==");
     if (setup_listeners(host) != 0) {
         shutdown_listeners();
         aoa_close(&g_dev);
@@ -682,7 +687,7 @@ int main(int argc, char **argv)
     }
 
     if (pthread_create(&tid, NULL, accept_loop, NULL) != 0) {
-        aoa_log("创建 accept 线程失败");
+        aoa_log("failed to create accept thread");
         shutdown_listeners();
         aoa_close(&g_dev);
         aoa_fini();
@@ -690,13 +695,13 @@ int main(int argc, char **argv)
     }
     pthread_detach(tid);
 
-    aoa_log("== 6. 桥接已就绪，可以启动车机程序 ==");
+    aoa_log("== 6. bridge ready, you can start the head-unit program ==");
     rc = usb_rx_loop();
 
     if (rc != 0) {
-        aoa_log("USB 接收循环结束（错误）");
+        aoa_log("USB receive loop ended (error)");
     } else {
-        aoa_log("USB 接收循环结束（正常退出）");
+        aoa_log("USB receive loop ended (clean exit)");
     }
 
     aoa_stop = 1;

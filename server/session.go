@@ -19,7 +19,7 @@ type serverMessage struct {
 	Message       string `json:"message,omitempty"`
 }
 
-// clientMessage 是浏览器发来的 JSON 控制消息。
+// clientMessage is a JSON control message sent by the browser.
 type clientMessage struct {
 	Type   string  `json:"type"`
 	X      float64 `json:"x"`
@@ -31,15 +31,15 @@ type clientMessage struct {
 	FPS    int     `json:"fps"`
 }
 
-// session 维护 CarLife 会话状态：握手推进、音视频转发、浏览器命令下发。
+// session tracks CarLife session state: handshake progression, audio/video forwarding, and dispatch of browser commands.
 type session struct {
 	host *hostClient
 	hub  *Hub
 
 	mu sync.Mutex
 
-	hostReady  bool
-	deviceName string
+	hostReady   bool
+	deviceName  string
 	deviceModel string
 
 	requestedWidth  int
@@ -72,7 +72,7 @@ func newSession(host *hostClient, hub *Hub, width, height, fps int) *session {
 	}
 }
 
-/* ------------------------------------------------------------ carlife-host 事件 */
+/* ------------------------------------------------------------ carlife-host events */
 
 func (s *session) onHostEvent(event hostEvent) {
 	switch event.channel {
@@ -87,7 +87,7 @@ func (s *session) onHostEvent(event hostEvent) {
 	case chTTS:
 		s.onAudioEvent(audioStreamTTS, streamNameTTS, event)
 	case chVR:
-		// 语音上行由手机主动推流，本进程只负责转发，不需要额外处理。
+		// Voice upstream is pushed by the phone on its own; this process only forwards it, so no extra handling is needed.
 	}
 }
 
@@ -103,16 +103,16 @@ func (s *session) onCommandEvent(event hostEvent) {
 		s.hostReady = connected
 		s.mu.Unlock()
 		if connected {
-			log.Printf("车机通道就绪，开始 CarLife 握手")
+			log.Printf("head unit channel ready, starting CarLife handshake")
 			s.startHandshake()
 		} else {
-			log.Printf("车机通道不可用（connectionSetup 返回 %d），请确认 usb-bridge 已启动后重启 carlife-host", result)
+			log.Printf("head unit channel unavailable (connectionSetup returned %d); make sure usb-bridge is running, then restart carlife-host", result)
 		}
 		s.broadcastState()
 
 	case evProtocolMatch:
 		if len(event.payload) >= 4 {
-			log.Printf("协议版本匹配状态：%d", binary.BigEndian.Uint32(event.payload))
+			log.Printf("protocol version match status: %d", binary.BigEndian.Uint32(event.payload))
 		}
 		s.requestVideo()
 
@@ -126,9 +126,9 @@ func (s *session) onCommandEvent(event hostEvent) {
 		s.mu.Lock()
 		s.width, s.height = width, height
 		s.mu.Unlock()
-		log.Printf("手机已就绪，视频 %dx%d@%d，启动编码", width, height, fps)
+		log.Printf("phone ready, video %dx%d@%d, starting encoder", width, height, fps)
 		if err := s.host.sendVideoEncoderStart(); err != nil {
-			log.Printf("启动视频编码失败：%v", err)
+			log.Printf("failed to start video encoder: %v", err)
 		}
 		s.broadcastState()
 
@@ -136,25 +136,25 @@ func (s *session) onCommandEvent(event hostEvent) {
 		s.applyDeviceInfo(event.payload)
 
 	case evForeground:
-		log.Printf("手机端 CarLife 进入前台")
+		log.Printf("CarLife on phone moved to foreground")
 		s.broadcastState()
 
 	case evBackground:
-		log.Printf("手机端 CarLife 退到后台")
+		log.Printf("CarLife on phone moved to background")
 
 	case evScreenOn:
-		log.Printf("手机屏幕点亮")
+		log.Printf("phone screen on")
 
 	case evScreenOff:
-		log.Printf("手机屏幕熄灭")
+		log.Printf("phone screen off")
 
 	case evTeleState:
 		if len(event.payload) >= 1 {
-			log.Printf("通话状态变化：%d", event.payload[0])
+			log.Printf("call state changed: %d", event.payload[0])
 		}
 
 	case evMDExit:
-		log.Printf("手机端 CarLife 已退出")
+		log.Printf("CarLife on phone exited")
 		s.mu.Lock()
 		s.streaming = false
 		s.avcC = nil
@@ -162,19 +162,19 @@ func (s *session) onCommandEvent(event hostEvent) {
 		s.broadcastState()
 
 	case evMicWakeup:
-		log.Printf("语音唤醒")
+		log.Printf("voice wakeup")
 
 	case evMicEnd:
-		log.Printf("语音录制结束")
+		log.Printf("voice recording ended")
 
 	case evMicRecog:
-		log.Printf("语音识别中")
+		log.Printf("voice recognition in progress")
 
 	case evFeatureConfigRequest:
-		log.Printf("已回复手机的特性配置请求")
+		log.Printf("replied to phone feature config request")
 
 	case evModuleStatus:
-		log.Printf("手机模块状态：%s", string(event.payload))
+		log.Printf("phone module status: %s", string(event.payload))
 
 	case evLog:
 		log.Printf("carlife-host：%s", string(event.payload))
@@ -184,7 +184,7 @@ func (s *session) onCommandEvent(event hostEvent) {
 func (s *session) applyDeviceInfo(payload []byte) {
 	var info map[string]string
 	if err := json.Unmarshal(payload, &info); err != nil {
-		log.Printf("解析手机设备信息失败：%v", err)
+		log.Printf("failed to parse phone device info: %v", err)
 		return
 	}
 	name := info["model"]
@@ -195,13 +195,13 @@ func (s *session) applyDeviceInfo(payload []byte) {
 	s.deviceName = name
 	s.deviceModel = info["brand"]
 	s.mu.Unlock()
-	log.Printf("手机设备：%s（%s，Android %s）", name, info["manufacturer"], info["release"])
+	log.Printf("phone device: %s (%s, Android %s)", name, info["manufacturer"], info["release"])
 	s.broadcastState()
 }
 
 func (s *session) startHandshake() {
 	if err := s.host.sendProtocolVersion(1, 0); err != nil {
-		log.Printf("发送协议版本失败：%v", err)
+		log.Printf("failed to send protocol version: %v", err)
 	}
 }
 
@@ -209,13 +209,13 @@ func (s *session) requestVideo() {
 	s.mu.Lock()
 	width, height, fps := s.requestedWidth, s.requestedHeight, s.requestedFPS
 	s.mu.Unlock()
-	log.Printf("请求手机按 %dx%d@%d 编码视频", width, height, fps)
+	log.Printf("requesting phone to encode video at %dx%d@%d", width, height, fps)
 	if err := s.host.sendVideoEncoderInit(int32(width), int32(height), int32(fps)); err != nil {
-		log.Printf("请求视频编码失败：%v", err)
+		log.Printf("failed to request video encoding: %v", err)
 	}
 }
 
-/* ---------------------------------------------------------------------- 视频 */
+/* ---------------------------------------------------------------------- video */
 
 func (s *session) onVideoData(data []byte) {
 	sps, pps, keyframe := scanAnnexB(data)
@@ -238,12 +238,12 @@ func (s *session) onVideoData(data []byte) {
 	s.hub.Broadcast(encodeVideoFrame(videoStreamType, keyframe, data))
 
 	if first {
-		log.Printf("视频流已开始")
+		log.Printf("video stream started")
 		s.broadcastState()
 	}
 }
 
-/* ---------------------------------------------------------------------- 音频 */
+/* ---------------------------------------------------------------------- audio */
 
 func (s *session) onAudioEvent(streamType byte, name string, event hostEvent) {
 	switch event.tag {
@@ -262,7 +262,7 @@ func (s *session) onAudioEvent(streamType byte, name string, event hostEvent) {
 		s.audioChannels[streamType] = channels
 		s.audioSamples[streamType] = 0
 		s.mu.Unlock()
-		log.Printf("通道 %s 音频：%d Hz / %d 声道", name, sampleRate, channels)
+		log.Printf("channel %s audio: %d Hz / %d channels", name, sampleRate, channels)
 		s.hub.Broadcast(encodeAudioConfig(streamType, sampleRate, channels, name, nil))
 
 	case evAudioData:
@@ -284,12 +284,12 @@ func (s *session) onAudioEvent(streamType byte, name string, event hostEvent) {
 		s.hub.Broadcast(encodeAudioStopped(streamType))
 
 	case evAudioPause, evAudioResume, evAudioSeek:
-		// CarLife 的播放控制只影响手机侧，这里不需要额外动作。
+		// CarLife playback control only affects the phone side; no extra action is needed here.
 	}
 }
 
-// channelsFromConfig 把 CarLife 的 channelConfig 折算成声道数。
-// 取值可能是简单计数，也可能是 Android 的 AudioFormat 通道掩码。
+// channelsFromConfig maps CarLife's channelConfig to a channel count.
+// The value may be a simple count or an Android AudioFormat channel mask.
 func channelsFromConfig(config int) int {
 	switch config {
 	case 1, 2:
@@ -303,7 +303,7 @@ func channelsFromConfig(config int) int {
 	}
 }
 
-/* ------------------------------------------------------------ 浏览器命令处理 */
+/* ------------------------------------------------------------ browser command handling */
 
 var hardKeyCodes = map[string]uint32{
 	"home":    0x00000001,
@@ -343,7 +343,7 @@ func (s *session) handleClientMessage(data []byte) {
 	case "key":
 		if code, ok := hardKeyCodes[message.Key]; ok {
 			if err := s.host.sendHardKey(code); err != nil {
-				log.Printf("发送硬按键 %s 失败：%v", message.Key, err)
+				log.Printf("failed to send hard key %s: %v", message.Key, err)
 			}
 		}
 	case "foreground":
@@ -385,7 +385,7 @@ func (s *session) handleTouch(message clientMessage) {
 		y = int32(height) - 1
 	}
 	if err := s.host.sendTouch(action, x, y); err != nil {
-		log.Printf("发送触摸失败：%v", err)
+		log.Printf("failed to send touch: %v", err)
 	}
 }
 
@@ -401,9 +401,9 @@ func (s *session) handleDisplayChange(message clientMessage) {
 	s.requestedWidth, s.requestedHeight, s.requestedFPS = message.Width, message.Height, fps
 	s.mu.Unlock()
 
-	log.Printf("切换视频规格为 %dx%d@%d", message.Width, message.Height, fps)
+	log.Printf("switching video mode to %dx%d@%d", message.Width, message.Height, fps)
 	go func() {
-		// 先复位编码器，稍候再按新规格重新协商，否则手机侧不会重新出图。
+		// Reset the encoder first, then renegotiate with the new mode; otherwise the phone will not start producing frames again.
 		_ = s.host.send(chCmd, cmdVideoEncoderReset, nil)
 		time.Sleep(300 * time.Millisecond)
 		s.mu.Lock()
@@ -414,7 +414,7 @@ func (s *session) handleDisplayChange(message clientMessage) {
 	}()
 }
 
-/* ---------------------------------------------------------------------- 广播 */
+/* ---------------------------------------------------------------------- broadcast */
 
 func (s *session) broadcastState() {
 	s.mu.Lock()

@@ -1,7 +1,7 @@
-# carlife-host —— CarLife 车机侧协议栈宿主进程
+# carlife-host -- host process for the CarLife head-unit-side protocol stack
 #
-# 依赖 scripts/build-native.sh 产出的 libcarlifevehicle.dylib，
-# 若尚未构建会自动触发一次。
+# Depends on libcarlifevehicle.dylib produced by scripts/build-native.sh,
+# and triggers a build automatically if it is not present yet.
 
 ROOT       := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 PB         := $(ROOT)/.build/pb
@@ -22,7 +22,7 @@ all: $(TARGET)
 
 $(TARGET): $(SOURCES) $(HEADERS) native
 	$(CXX) $(CXXFLAGS) -o $@ $(SOURCES) $(LDFLAGS)
-	@echo "构建完成：$@"
+	@echo "Build complete: $@"
 
 native $(LIBDIR)/libcarlifevehicle.dylib:
 	@test -f $(LIBDIR)/libcarlifevehicle.dylib || $(ROOT)/scripts/build-native.sh

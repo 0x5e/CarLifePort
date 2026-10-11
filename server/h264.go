@@ -1,7 +1,7 @@
 package main
 
-// scanAnnexB 扫描一段 Annex B 码流，取出首个 SPS / PPS，并判断是否含 IDR 帧。
-// 原始数据不做改动，直接交给浏览器侧的 WebCodecs。
+// scanAnnexB scans an Annex B bitstream, extracts the first SPS / PPS, and reports whether it contains an IDR frame.
+// The raw data is left unchanged and passed directly to WebCodecs on the browser side.
 func scanAnnexB(data []byte) (sps, pps []byte, keyframe bool) {
 	index := 0
 	for index+3 < len(data) {
@@ -51,20 +51,20 @@ func scanAnnexB(data []byte) (sps, pps []byte, keyframe bool) {
 	return sps, pps, keyframe
 }
 
-// buildAvcC 按 ISO/IEC 14496-15 组装 AVCDecoderConfigurationRecord。
-// 浏览器侧的 avcCodecString 会读 record[1..3] 拼出 avc1.PPCCLL。
+// buildAvcC assembles an AVCDecoderConfigurationRecord per ISO/IEC 14496-15.
+// avcCodecString on the browser side reads record[1..3] to build avc1.PPCCLL.
 func buildAvcC(sps, pps []byte) []byte {
 	if len(sps) < 4 || len(pps) == 0 {
 		return nil
 	}
 	record := make([]byte, 0, 11+len(sps)+len(pps))
 	record = append(record,
-		1,            // configurationVersion
-		sps[1],       // AVCProfileIndication
-		sps[2],       // profile_compatibility
-		sps[3],       // AVCLevelIndication
-		0xFF,         // 6 位保留 + lengthSizeMinusOne = 3（4 字节长度前缀）
-		0xE1,         // 3 位保留 + numOfSequenceParameterSets = 1
+		1,      // configurationVersion
+		sps[1], // AVCProfileIndication
+		sps[2], // profile_compatibility
+		sps[3], // AVCLevelIndication
+		0xFF,   // 6 reserved bits + lengthSizeMinusOne = 3 (4-byte length prefix)
+		0xE1,   // 3 reserved bits + numOfSequenceParameterSets = 1
 		byte(len(sps)>>8), byte(len(sps)),
 	)
 	record = append(record, sps...)

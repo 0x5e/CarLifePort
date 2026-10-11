@@ -2,13 +2,13 @@ package main
 
 import "encoding/binary"
 
-// 浏览器侧的二进制帧格式。与 web/src/protocol.ts 的 parseWireMessage 一一对应，
-// 全部小端。
+// Browser-side binary frame format. It maps one-to-one to parseWireMessage in
+// web/src/protocol.ts, and everything is little-endian.
 //
 //	type 1 VIDEO_CONFIG:  [1][streamType u8][codec u8][width u32][height u32][avcC]
-//	type 2 VIDEO_FRAME:   [2][streamType u8][flags u8][pts u64][Annex B 数据]
+//	type 2 VIDEO_FRAME:   [2][streamType u8][flags u8][pts u64][Annex B data]
 //	type 3 AUDIO_CONFIG:  [3][streamType u8][codec u8][sampleRate u32][channels u8][nameLen u8][name][description]
-//	type 4 AUDIO_PACKET:  [4][streamType u8][pts u64][数据]
+//	type 4 AUDIO_PACKET:  [4][streamType u8][pts u64][data]
 //	type 6 AUDIO_STOPPED: [6][streamType u8]
 const (
 	wireVideoConfig  byte = 1
@@ -26,13 +26,15 @@ const (
 	wireFlagKeyframe byte = 1
 )
 
-// CarLife 只有一路视频；音频按通道拆成媒体与导航播报两路，便于前端分别调音量。
+// CarLife has a single video stream; audio is split into media and navigation channels so the front end can adjust each volume separately.
 const (
 	videoStreamType  byte = 1
 	audioStreamMedia byte = 1
 	audioStreamTTS   byte = 2
 )
 
+// These names travel over the wire and the browser shows them directly as volume
+// slider labels, so they stay in the front end's display language.
 const (
 	streamNameMedia = "媒体"
 	streamNameTTS   = "导航播报"
@@ -56,7 +58,7 @@ func encodeVideoFrame(streamType byte, keyframe bool, annexB []byte) []byte {
 	if keyframe {
 		frame[2] = wireFlagKeyframe
 	}
-	// 时间戳交给解码器自行按帧率推进，这里固定为 0。
+	// Timestamps are advanced by the decoder itself according to the frame rate, so this is fixed at 0.
 	copy(frame[11:], annexB)
 	return frame
 }

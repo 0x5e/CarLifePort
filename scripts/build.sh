@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# 一键构建 CarLifePort 全部组件。
+# Build every CarLifePort component.
 #
-#   ./scripts/build.sh            增量构建
-#   ./scripts/build.sh --force    强制重建原生库
+#   ./scripts/build.sh            incremental build
+#   ./scripts/build.sh --force    rebuild the native library as well
 #
 set -euo pipefail
 
@@ -12,28 +12,28 @@ cd "$ROOT"
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 
-step "1/5 原生库（protobuf 2.5.0 + libcarlifevehicle.dylib）"
+step "1/5 native library (protobuf 2.5.0 + libcarlifevehicle.dylib)"
 ./scripts/build-native.sh "$@"
 
-step "2/5 USB 桥接层"
+step "2/5 USB bridge"
 make -C tools/usb-bridge
 
-step "3/5 车机协议栈宿主"
+step "3/5 protocol stack host"
 make -C host
 
-step "4/5 Go 后端"
+step "4/5 Go backend"
 (cd server && go build -o carlifed .)
 
-step "5/5 前端"
+step "5/5 web frontend"
 if [ ! -d web/node_modules ]; then
-    echo "首次构建，安装前端依赖…"
+    echo "first build, installing web dependencies..."
     (cd web && npm install)
 fi
 (cd web && npm run build)
 
-printf '\n\033[1;32m构建完成\033[0m\n'
-printf '  桥接层  %s\n' "tools/usb-bridge/carlife-usb-bridge"
-printf '  宿主    %s\n' "host/carlife-host"
-printf '  后端    %s\n' "server/carlifed"
-printf '  前端    %s\n' "web/dist"
-printf '\n用 ./scripts/run.sh 启动全部进程\n'
+printf '\n\033[1;32mbuild complete\033[0m\n'
+printf '  bridge   %s\n' "tools/usb-bridge/carlife-usb-bridge"
+printf '  host     %s\n' "host/carlife-host"
+printf '  backend  %s\n' "server/carlifed"
+printf '  web      %s\n' "web/dist"
+printf '\nrun ./scripts/run.sh to start everything\n'

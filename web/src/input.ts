@@ -1,6 +1,6 @@
 import type { ClientMessage, HardKey } from './protocol';
 
-/** 键盘按键到 CarLife 车机硬按键的映射。 */
+/** Keyboard key to CarLife head-unit hard key mapping. */
 const KEY_MAP: Record<string, HardKey> = {
   ArrowUp: 'up',
   ArrowDown: 'down',
@@ -16,7 +16,7 @@ const KEY_MAP: Record<string, HardKey> = {
   MediaTrackPrevious: 'prev',
 };
 
-/** 把浏览器指针与键盘输入映射成 CarLife 的单点触摸与车机硬按键。 */
+/** Map browser pointer and keyboard input to CarLife single-touch and hard keys. */
 export class InputController {
   private down = false;
   private pendingFlush = 0;
