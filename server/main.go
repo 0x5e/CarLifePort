@@ -26,10 +26,10 @@ type listenAddress struct {
 // address prints one URL per interface, the way vite does, so the address that works from
 // another machine is visible instead of having to be guessed. A specific bind address
 // yields only that one.
-func viewerURLs(addr, token string) []string {
+func viewerURLs(addr, token, scheme string) []string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return []string{fmt.Sprintf("http://%s/?token=%s", addr, token)}
+		return []string{fmt.Sprintf("%s://%s/?token=%s", scheme, addr, token)}
 	}
 
 	addresses := []listenAddress{{host: host}}
@@ -39,7 +39,7 @@ func viewerURLs(addr, token string) []string {
 
 	urls := make([]string, 0, len(addresses))
 	for _, entry := range addresses {
-		url := fmt.Sprintf("http://%s/?token=%s", net.JoinHostPort(entry.host, port), token)
+		url := fmt.Sprintf("%s://%s/?token=%s", scheme, net.JoinHostPort(entry.host, port), token)
 		if entry.label != "" {
 			url += " (" + entry.label + ")"
 		}
@@ -89,6 +89,7 @@ func main() {
 	width := flag.Int("width", 1280, "requested phone video width")
 	height := flag.Int("height", 720, "requested phone video height")
 	fps := flag.Int("fps", 60, "requested phone video frame rate (the phone may cap it; the accepted value is logged)")
+	useTLS := flag.Bool("tls", true, "serve HTTPS with a self-signed certificate; plain http only works on localhost because the browser client needs a secure context")
 	flag.Parse()
 
 	log.SetFlags(log.Ltime)
@@ -141,14 +142,34 @@ func main() {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 
+	scheme := "http"
+	var certFile, keyFile string
+	if *useTLS {
+		var err error
+		certFile, keyFile, err = selfSignedCertificate(certificateDir())
+		if err != nil {
+			log.Fatalf("cannot prepare the TLS certificate: %v", err)
+		}
+		scheme = "https"
+	}
+
 	log.Printf("CarLife head unit service started")
-	for _, entry := range viewerURLs(*addr, *token) {
+	for _, entry := range viewerURLs(*addr, *token, scheme) {
 		log.Printf("  viewer URL   %s", entry)
+	}
+	if *useTLS {
+		log.Printf("  certificate  %s (self-signed: accept the browser warning once)", certFile)
 	}
 	log.Printf("  web assets   %s", *webDir)
 	log.Printf("  waiting for  %s", *hostSocket)
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	var err error
+	if *useTLS {
+		err = server.ListenAndServeTLS(certFile, keyFile)
+	} else {
+		err = server.ListenAndServe()
+	}
+	if err != nil && err != http.ErrServerClosed {
 		log.Fatalf("HTTP server exited: %v", err)
 	}
 	log.Printf("stopped")

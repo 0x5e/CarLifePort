@@ -92,7 +92,8 @@ start() {
 
 cat <<EOF
 
-== open one of the viewer URLs printed by carlifed below (token: $TOKEN)
+== open one of the viewer URLs printed by carlifed below (https, token: $TOKEN)
+== the certificate is self-signed: accept the browser warning once
 == listening on $ADDR; local machine only: ADDR=127.0.0.1:8080 ./scripts/run.sh
 == requesting video at $FPS fps (override with FPS=30 ./scripts/run.sh)
 == reporting head unit channel ${CHANNEL:-CarLife} (override with CHANNEL=xxx ./scripts/run.sh)

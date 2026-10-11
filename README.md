@@ -73,9 +73,15 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 一样把每张网卡的地址都打出来（带网卡名）：
 
 ```
-  viewer URL   http://127.0.0.1:8080/?token=carlife
-  viewer URL   http://192.168.40.2:8080/?token=carlife (en0)
+  viewer URL   https://127.0.0.1:8080/?token=carlife
+  viewer URL   https://192.168.40.2:8080/?token=carlife (en0)
+  certificate  .../self-signed.crt (self-signed: accept the browser warning once)
 ```
+
+服务默认走 **HTTPS**，用的是启动时自动生成的自签证书（缓存在用户缓存目录，网卡地址
+变了会自动重签）。之所以不能省掉 TLS：playport 前端用 WebCodecs 解码，而 WebCodecs
+只在安全上下文里可用，局域网 IP 走 http 时浏览器根本不给解码器，只有 localhost 例外。
+自签证书浏览器会报「不安全」，接受一次即可，本机自用不需要证书颁发机构。
 
 地址里的 `token` 是 playport 前端要求的访问令牌，缺了它前端不会建立连接。
 首次打开后令牌会存在 localStorage，之后不带 `?token=` 直接访问也可以。
@@ -85,6 +91,13 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 
 ```sh
 ADDR=127.0.0.1:8080 ./scripts/run.sh      # 或 carlifed --addr 127.0.0.1:8080
+```
+
+只在本机用、又不想看证书告警时，可以退回明文 http（仅 localhost 有安全上下文，
+所以只有本机能用）：
+
+```sh
+server/carlifed --addr 127.0.0.1:8080 --tls=false
 ```
 
 ### 手机什么时候插都行
