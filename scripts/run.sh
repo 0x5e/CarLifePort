@@ -30,6 +30,10 @@ FPS="${FPS:-60}"
 # prints one viewer URL per interface, the way vite does. Set it to 127.0.0.1:8080 to keep
 # the page on this machine only.
 ADDR="${ADDR:-0.0.0.0:8080}"
+# Vendor channel number reported to the phone during the handshake. Baidu issues one per
+# approved head unit project; the open source vehicle library has none, so this is a
+# placeholder. Set CHANNEL=<real value> if you have one.
+CHANNEL="${CHANNEL:-}"
 
 # ---------------------------------------------------------------- prechecks
 for f in "$BRIDGE" "$HOST" "$SERVER"; do
@@ -91,6 +95,7 @@ cat <<EOF
 == open one of the viewer URLs printed by carlifed below (token: $TOKEN)
 == listening on $ADDR; local machine only: ADDR=127.0.0.1:8080 ./scripts/run.sh
 == requesting video at $FPS fps (override with FPS=30 ./scripts/run.sh)
+== reporting head unit channel ${CHANNEL:-CarLife} (override with CHANNEL=xxx ./scripts/run.sh)
 == open the CarLife app on the phone and confirm the connection
 == the phone may be plugged in before or after this script starts
 == unplugging and replugging the phone rebuilds the link automatically
@@ -105,7 +110,11 @@ PIDS=("$server_pid")
 while :; do
     start bridge "$BRIDGE"
     bridge_pid=$LAST_PID
-    start host "$HOST"
+    if [ -n "$CHANNEL" ]; then
+        start host "$HOST" --channel "$CHANNEL"
+    else
+        start host "$HOST"
+    fi
     host_pid=$LAST_PID
     PIDS=("$server_pid" "$bridge_pid" "$host_pid")
 

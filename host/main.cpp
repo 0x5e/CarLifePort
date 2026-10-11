@@ -28,6 +28,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
+#include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -47,6 +48,13 @@ static int g_connection_result = -1;
 
 static int g_quiet = 0;
 static int g_verbose = 0;
+
+/* Identity reported to the phone during the handshake. The channel number is the one
+ * Baidu issues to a head unit vendor after a front-fit project is approved; the open
+ * source vehicle library has none, so this is a placeholder that can be overridden
+ * with --channel once a real value is available. See README ("Authentication"). */
+static std::string g_channel = "CarLife";
+static std::string g_cuid = "CarLifePort";
 
 /* -------------------------------------------------------- Logging and utils */
 
@@ -385,6 +393,79 @@ static void cb_navi_next_turn(S_NAVI_NEXT_TURN_INFO* info)
     log_line("navigation turn prompt: action=%u nextTurn=%u road=%s", info->action, info->nextTurn, info->roadName.c_str());
 }
 
+/* ------------------------------------------------------- Head unit identity
+ *
+ * A real head unit announces itself right after the protocol version and before the
+ * video encoder is initialised -- captured traffic shows this order:
+ *   head unit --MSG_CMD_STATISTIC_INFO (0x00018027)--> phone
+ *   head unit --MSG_CMD_HU_INFO (0x00018003)--> phone
+ *
+ * The library's bundled test program sends neither. Statistics info carries the vendor
+ * channel number, which is what the phone checks before it treats the head unit as
+ * authenticated, so an unreported identity is a plausible cause of the "unauthenticated
+ * head unit" warning. */
+static unsigned int g_connect_count = 0;
+
+static void send_statistic_info(void)
+{
+    S_STATISTICS_INFO info;
+    info.cuid = g_cuid;
+    info.versionName = "1.0.0";
+    info.versionCode = 1;
+    info.channel = g_channel;
+    info.connectCount = ++g_connect_count;
+    info.connectSuccessCount = g_connect_count;
+    info.connectTime = 0; /* the units of this counter are not documented */
+    info.crashLog = "";
+
+    if (CCarLifeLib::getInstance()->cmdStatisticInfo(&info) < 0) {
+        log_line("failed to send statistics info");
+        return;
+    }
+    log_line("sent statistics info (channel=%s, cuid=%s)", info.channel.c_str(), info.cuid.c_str());
+}
+
+static void send_hu_info(void)
+{
+    struct utsname uts;
+    if (uname(&uts) != 0) {
+        log_line("failed to read host identity: %s", strerror(errno));
+        return;
+    }
+
+    S_HU_INFO info;
+    info.os = "Linux";
+    info.board = uts.machine;
+    info.bootloader = "unknown";
+    info.brand = "CarLifePort";
+    info.cpu_abi = uts.machine;
+    info.cpu_abi2 = "";
+    info.device = uts.nodename;
+    info.display = "CarLife head unit";
+    info.fingerprint = std::string("CarLifePort/") + uts.machine + "/" + uts.nodename;
+    info.hardware = uts.machine;
+    info.host = uts.nodename;
+    info.cid = "";
+    info.manufacturer = "CarLifePort";
+    info.model = "CarLife head unit";
+    info.product = "CarLifePort";
+    info.serial = uts.nodename;
+    info.codename = "REL";
+    info.incremental = "1";
+    info.release = uts.release;
+    info.sdk = "0";
+    info.sdk_int = 0;
+    info.token = ""; /* issued by Baidu together with the channel number */
+    info.btaddress = "";
+
+    if (CCarLifeLib::getInstance()->cmdHUInfro(&info) < 0) {
+        log_line("failed to send head unit info");
+        return;
+    }
+    log_line("sent head unit info (model=%s, host=%s, release=%s)", info.model.c_str(),
+             info.host.c_str(), info.release.c_str());
+}
+
 /* ------------------------------------------------------- Head unit authentication
  *
  * The phone expects the head unit to run the authentication exchange below; when it
@@ -659,6 +740,10 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             version.minorVersion = get_be32(body + 4);
             lib->cmdHUProtoclVersion(&version);
             log_line("sending protocol version %u.%u", version.majorVersion, version.minorVersion);
+
+            /* Identify ourselves before anything else is negotiated */
+            send_statistic_info();
+            send_hu_info();
             break;
         }
         case CMD_VIDEO_ENCODER_INIT: {
@@ -937,6 +1022,8 @@ static void usage(const char* program)
             "Usage: %s [options]\n"
             "\n"
             "  --socket <path>   Unix socket path (default %s)\n"
+            "  --channel <name>  vendor channel number reported to the phone (default CarLife)\n"
+            "  --cuid <id>       head unit id reported to the phone (default CarLifePort)\n"
             "  -q, --quiet       do not print this process's runtime logs\n"
             "  -v, --verbose     also emit the protocol stack's internal logs (discarded by default)\n"
             "  -h, --help        show this help\n"
@@ -951,6 +1038,10 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             socket_path = argv[++i];
+        } else if (strcmp(argv[i], "--channel") == 0 && i + 1 < argc) {
+            g_channel = argv[++i];
+        } else if (strcmp(argv[i], "--cuid") == 0 && i + 1 < argc) {
+            g_cuid = argv[++i];
         } else if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
             g_quiet = 1;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {

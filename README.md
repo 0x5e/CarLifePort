@@ -143,6 +143,34 @@ server/carlifed --addr 127.0.0.1:8080 \
 无法校验，而这条流程里上报结果的一方本来就是车机）。日志里会看到
 `phone authenticated this head unit`。
 
+### 车机身份上报
+
+真车机在发完协议版本后还会紧接着上报两条身份信息，顺序如下（取自真车机抓包）：
+
+```
+车机 --MSG_CMD_HU_PROTOCOL_VERSION(0x00018001)--> 手机
+车机 --MSG_CMD_STATISTIC_INFO(0x00018027)--> 手机    含渠道号 channel
+车机 --MSG_CMD_HU_INFO(0x00018003)--> 手机
+车机 --MSG_CMD_VIDEO_ENCODER_INIT(0x00018007)--> 手机
+```
+
+开源库自带的测试程序这两条都没发（`cmdHuAuthenRequest` 在它里面也是注释掉的），
+本项目已补上。`MSG_CMD_STATISTIC_INFO` 里的 `channel` 就是百度发给前装厂商的**渠道号**，
+CarLife 车机端 V2.0 SDK 明确写了它在进入 ESTABLISHED 之前会被校验、失败触发
+`onConnectionAuthenFailed()` —— 所以「未认证的车机端」很可能就是这条没上报或渠道号无效。
+
+默认值只是占位（`CarLife`），拿到真值后这样覆盖：
+
+```sh
+CHANNEL=xxxxx ./scripts/run.sh          # 或直接 carlife-host --channel xxxxx
+```
+
+配套还有 `--cuid`（车机 ID，默认 `CarLifePort`）。日志里会看到
+`sent statistics info (channel=...)` 与 `sent head unit info (...)`。
+
+需要说明的是：我们拿不到百度签发的渠道号，也没有公开的逆向结果可用，所以**这一步
+只能消除「没上报」这个原因**，无法保证手机一定判定为已认证。
+
 ## 与 playport 前端的接口对齐
 
 `server/` 实现的正是 playport 服务端的那套契约，前端因此可以直接用：
@@ -178,7 +206,10 @@ Siri 和夜间模式，按下表映射：
 - 视频只有 H.264；音频按 16 位 PCM 处理。
 - 帧率由手机决定：请求 60 fps 时手机可能仍按 30 fps 编码，后端只能报告实测值。
 - 车机鉴权由车机端自行上报通过，开源库没有百度证书，无法校验手机返回的
-  `encryptValue`；若手机仍判定未认证，只能换用官方认证过的车机端实现。
+  `encryptValue`。`MSG_CMD_STATISTIC_INFO` 里的渠道号同理：没有百度签发的值，只能用占位
+  符。若手机仍判定未认证（跑一段时间后提示「未认证的车机端」并断开），说明卡在证书/渠道
+  号这一层，只能拿到真值或换用官方认证过的车机端实现。作为调试用途，能连上的那段时间
+  足够验证画面与操控。
 - 重新插拔要重建 `carlife-host`，`run.sh` 会自动做；手工单独运行时需自己重启。
 - 手机侧 CarLife App 是系统在 accessory 附着时拉起的，比链路就绪慢几秒。`carlifed`
   每 5 秒重发一次协议版本直到会话建立，用来覆盖这段延迟；一直连不上手机时会持续重发。
