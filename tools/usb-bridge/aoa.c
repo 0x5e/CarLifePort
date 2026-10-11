@@ -37,6 +37,10 @@
 #define RETRY_ACCESSORY_MODE 10
 #define RETRY_REBIND 10
 
+/* A zero-length bulk read is legal USB traffic (the phone emits zero-length packets
+ * between transfers). Tolerate them, but stop waiting if they never end. */
+#define MAX_ZERO_READS 64
+
 static const char *const kIdent[6] = {
     "Baidu",
     "CarLife",
@@ -598,6 +602,7 @@ int aoa_send_message(struct aoa_device *d, unsigned int channel, const unsigned 
 int aoa_read_exact(struct aoa_device *d, unsigned char *dst, unsigned int len)
 {
     unsigned int done = 0;
+    unsigned int zero_reads = 0;
 
     while (done < len) {
         unsigned int want = len - done;
@@ -620,9 +625,15 @@ int aoa_read_exact(struct aoa_device *d, unsigned char *dst, unsigned int len)
             return -1;
         }
         if (transferred <= 0) {
-            aoa_log("USB read returned 0 bytes");
-            return -1;
+            /* The phone ends a transfer with a zero-length packet; that is not a link
+             * failure, so keep waiting instead of tearing the whole bridge down. */
+            if (++zero_reads >= MAX_ZERO_READS) {
+                aoa_log("USB read returned 0 bytes %u times in a row, giving up", zero_reads);
+                return -1;
+            }
+            continue;
         }
+        zero_reads = 0;
         done += (unsigned int)transferred;
     }
     return 0;

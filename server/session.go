@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -55,7 +58,13 @@ type session struct {
 	width  int
 	height int
 
-	avcC      []byte
+	// Parameter sets as they were last seen. The phone may deliver SPS and PPS in the
+	// same frame or in separate ones, so both are remembered independently and the
+	// decoder configuration is rebuilt once both are known.
+	sps  []byte
+	pps  []byte
+	avcC []byte
+
 	streaming bool
 
 	touchDown bool
@@ -82,16 +91,18 @@ func newSession(host *hostClient, hub *Hub, width, height, fps int) *session {
 	}
 }
 
-// resetStream drops every per-session state. Called whenever carlife-host (re)connects,
-// because a reconnect means the previous CarLife session is over: the head-unit process
-// was restarted, which only happens after the phone was (re)plugged. Keeping the stale
-// state would leave the browser holding a decoder that no longer matches the new session.
+// resetStream drops the per-session progress state. Called whenever carlife-host
+// (re)connects, because a reconnect means the previous CarLife session is over: the
+// head-unit process was restarted, which only happens after the phone was (re)plugged.
+//
+// The encoder configuration (sps / pps / avcC / width / height) is deliberately kept. A
+// link drop does not necessarily produce a new one: the phone keeps encoding across the
+// drop, so it never repeats SPS/PPS. Throwing the known configuration away would leave
+// the browser with no decoder configuration at all, and video frames would be useless
+// even though they keep arriving.
 func (s *session) resetStream() {
 	s.mu.Lock()
-	s.avcC = nil
 	s.streaming = false
-	s.width = 0
-	s.height = 0
 	s.touchDown = false
 	s.audioSampleRate = make(map[byte]int)
 	s.audioChannels = make(map[byte]int)
@@ -238,26 +249,42 @@ func (s *session) onCommandEvent(event hostEvent) {
 		log.Printf("phone module status: %s", string(event.payload))
 
 	case evLog:
-		log.Printf("carlife-host：%s", string(event.payload))
+		log.Printf("carlife-host: %s", string(event.payload))
 	}
 }
 
 func (s *session) applyDeviceInfo(payload []byte) {
-	var info map[string]string
+	var info map[string]any
 	if err := json.Unmarshal(payload, &info); err != nil {
 		log.Printf("failed to parse phone device info: %v", err)
 		return
 	}
-	name := info["model"]
+	name := textField(info, "model")
 	if name == "" {
-		name = info["device"]
+		name = textField(info, "device")
 	}
 	s.mu.Lock()
 	s.deviceName = name
-	s.deviceModel = info["brand"]
+	s.deviceModel = textField(info, "brand")
 	s.mu.Unlock()
-	log.Printf("phone device: %s (%s, Android %s)", name, info["manufacturer"], info["release"])
+	log.Printf("phone device: %s (%s, Android %s)", name, textField(info, "manufacturer"), textField(info, "release"))
 	s.broadcastState()
+}
+
+// textField reads one device-info value as text. The phone sends a mix of types: most
+// fields are strings, but sdk_int is a number, and decoding the payload into a
+// map[string]string fails on it and loses the whole record.
+func textField(info map[string]any, key string) string {
+	switch value := info[key].(type) {
+	case string:
+		return value
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", value)
+	}
 }
 
 func (s *session) startHandshake() {
@@ -281,24 +308,48 @@ func (s *session) requestVideo() {
 func (s *session) onVideoData(data []byte) {
 	sps, pps, keyframe := scanAnnexB(data)
 
-	var config []byte
 	s.mu.Lock()
-	if sps != nil && pps != nil {
-		if record := buildAvcC(sps, pps); record != nil && string(record) != string(s.avcC) {
+	if sps != nil {
+		s.sps = sps
+	}
+	if pps != nil {
+		s.pps = pps
+	}
+	changed := false
+	if s.sps != nil && s.pps != nil {
+		if record := buildAvcC(s.sps, s.pps); record != nil && !bytes.Equal(record, s.avcC) {
 			s.avcC = record
-			config = encodeVideoConfig(videoStreamType, s.width, s.height, record)
+			changed = true
 		}
 	}
 	first := !s.streaming
 	s.streaming = true
+	width, height := s.width, s.height
+	if width <= 0 || height <= 0 {
+		// The encoder-init-done message never arrived (possible after a link rebuild), so
+		// fall back to the mode that was requested. The browser corrects the canvas from
+		// the decoded frame anyway.
+		width, height = s.requestedWidth, s.requestedHeight
+	}
+	// A new streaming session needs the configuration again: the browser dropped its
+	// decoder when the session went inactive. `changed` covers an encoder restart, which
+	// arrives with fresh parameter sets.
+	var config []byte
+	if s.avcC != nil && (changed || first) {
+		config = encodeVideoConfig(videoStreamType, width, height, s.avcC)
+	}
 	s.mu.Unlock()
 
 	if config != nil {
-		s.hub.Broadcast(config)
+		log.Printf("video config: %dx%d, %d-byte AVCDecoderConfigurationRecord", width, height, len(config)-11)
+		s.hub.BroadcastVideoConfig(config)
 	}
-	s.hub.Broadcast(encodeVideoFrame(videoStreamType, keyframe, data))
+	s.hub.BroadcastVideoFrame(keyframe, encodeVideoFrame(videoStreamType, keyframe, data))
 
 	if first {
+		if config == nil {
+			log.Printf("video frames have started, waiting for SPS/PPS")
+		}
 		log.Printf("video stream started")
 		s.broadcastState()
 	}
@@ -324,7 +375,7 @@ func (s *session) onAudioEvent(streamType byte, name string, event hostEvent) {
 		s.audioSamples[streamType] = 0
 		s.mu.Unlock()
 		log.Printf("channel %s audio: %d Hz / %d channels", name, sampleRate, channels)
-		s.hub.Broadcast(encodeAudioConfig(streamType, sampleRate, channels, name, nil))
+		s.hub.BroadcastAudioConfig(streamType, encodeAudioConfig(streamType, sampleRate, channels, name, nil))
 
 	case evAudioData:
 		if len(event.payload) == 0 {
@@ -339,10 +390,10 @@ func (s *session) onAudioEvent(streamType byte, name string, event hostEvent) {
 			s.audioSamples[streamType] += uint64(len(event.payload)) / 2 / uint64(channels)
 		}
 		s.mu.Unlock()
-		s.hub.Broadcast(encodeAudioPacket(streamType, timestampUs, event.payload))
+		s.hub.BroadcastAudioPacket(encodeAudioPacket(streamType, timestampUs, event.payload))
 
 	case evAudioStop:
-		s.hub.Broadcast(encodeAudioStopped(streamType))
+		s.hub.BroadcastAudioStopped(streamType, encodeAudioStopped(streamType))
 
 	case evAudioPause, evAudioResume, evAudioSeek:
 		// CarLife playback control only affects the phone side; no extra action is needed here.

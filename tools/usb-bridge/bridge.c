@@ -630,6 +630,9 @@ static int acquire_device(int vid, int pid, int force_handshake, struct aoa_devi
 
         if (is_accessory && !force_handshake) {
             aoa_log("  already in accessory mode, skipping 51/52/53");
+            aoa_log("  note: the phone keeps an accessory session across a replug, so the CarLife app");
+            aoa_log("  may still be attached to the previous one. If no traffic appears, clear the mode");
+            aoa_log("  (adb shell svc usb setFunctions) and replug, or pass --force-handshake.");
         } else {
             struct aoa_device prev = dev;
 

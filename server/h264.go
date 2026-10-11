@@ -10,7 +10,7 @@ func scanAnnexB(data []byte) (sps, pps []byte, keyframe bool) {
 			switch {
 			case data[index+2] == 1:
 				startLength = 3
-			case index+3 < len(data) && data[index+2] == 0 && data[index+3] == 1:
+			case data[index+3] == 1:
 				startLength = 4
 			}
 		}
@@ -20,16 +20,22 @@ func scanAnnexB(data []byte) (sps, pps []byte, keyframe bool) {
 		}
 
 		nalStart := index + startLength
-		nalEnd := nalStart
-		for nalEnd+2 < len(data) {
-			if data[nalEnd] == 0 && data[nalEnd+1] == 0 &&
-				(data[nalEnd+2] == 1 || (nalEnd+3 < len(data) && data[nalEnd+2] == 0 && data[nalEnd+3] == 1)) {
+		// The unit runs to the next start code, or to the end of the buffer when this is
+		// the last one. Falling short of the end would truncate the parameter sets, which
+		// are often delivered on their own.
+		nalEnd := len(data)
+		for scan := nalStart; scan+2 < len(data); scan++ {
+			if data[scan] != 0 || data[scan+1] != 0 {
+				continue
+			}
+			if data[scan+2] == 1 {
+				nalEnd = scan
 				break
 			}
-			nalEnd++
-		}
-		if nalEnd > len(data) {
-			nalEnd = len(data)
+			if scan+3 < len(data) && data[scan+2] == 0 && data[scan+3] == 1 {
+				nalEnd = scan
+				break
+			}
 		}
 
 		if nalStart < nalEnd {
