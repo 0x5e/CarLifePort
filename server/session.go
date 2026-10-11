@@ -160,21 +160,30 @@ func (s *session) sessionWatchdog(ctx context.Context) {
 			// Space the retries out instead of firing on every tick.
 			s.lastProgress = time.Now()
 		}
-		retryAuthen := s.hostReady && !s.authenDone && time.Since(s.lastAuthenTry) >= authenRetryInterval
+		// Disabled for now: asking the phone to authenticate made it report an
+		// unauthenticated head unit right away, which is worse than never asking. See
+		// requestAuthentication().
+		// retryAuthen := s.hostReady && !s.authenDone && time.Since(s.lastAuthenTry) >= authenRetryInterval
 		s.mu.Unlock()
 		if stalled {
 			log.Printf("no CarLife session yet (idle %s), resending protocol version", idle.Truncate(time.Second))
 			s.startHandshake()
 		}
-		if retryAuthen {
-			s.requestAuthentication()
-		}
+		// if retryAuthen {
+		// 	s.requestAuthentication()
+		// }
 		s.reportFrameRate()
 	}
 }
 
 // requestAuthentication starts the head unit authentication exchange. Repeating it is
 // harmless: the host skips the request once the phone has confirmed.
+//
+// Not called at the moment. Asking the phone to authenticate made it report an
+// unauthenticated head unit as soon as CarLife started, even though the head unit
+// reported a pass: the phone checks the response for a certificate this project does not
+// have. Never asking leaves the phone on its own timeout instead. Re-enable the two call
+// sites above when there is a real certificate.
 func (s *session) requestAuthentication() {
 	s.mu.Lock()
 	s.lastAuthenTry = time.Now()
@@ -254,7 +263,8 @@ func (s *session) onCommandEvent(event hostEvent) {
 			log.Printf("protocol version match status: %d", binary.BigEndian.Uint32(event.payload))
 		}
 		s.requestVideo()
-		s.requestAuthentication()
+		// Disabled for now: see requestAuthentication().
+		// s.requestAuthentication()
 
 	case evVideoInitDone:
 		if len(event.payload) < 12 {
