@@ -99,6 +99,15 @@ type session struct {
 	touchX int32
 	touchY int32
 
+	// The client has one play/pause button where CarLife has a key for each, so the last
+	// state this client asked for decides which of the two the next press sends.
+	mediaPlaying bool
+	// The same for the one voice button, which opens and closes the recognition screen.
+	voiceActive bool
+	// Last call state the phone reported, which decides whether the single call button
+	// means "answer" or "hang up".
+	callState int
+
 	audioSampleRate map[byte]int
 	audioChannels   map[byte]int
 	audioSamples    map[byte]uint64
@@ -311,6 +320,9 @@ func (s *session) onCommandEvent(event hostEvent) {
 
 	case evTeleState:
 		if len(event.payload) >= 1 {
+			s.mu.Lock()
+			s.callState = int(event.payload[0])
+			s.mu.Unlock()
 			log.Printf("call state changed: %d", event.payload[0])
 		}
 
@@ -590,32 +602,35 @@ func channelsFromConfig(config int) int {
 
 /* ------------------------------------------------------------ browser command handling */
 
-var hardKeyCodes = map[string]uint32{
-	"home":    0x00000001,
-	"call":    0x00000002,
-	"end":     0x00000003,
-	"next":    0x00000006,
-	"prev":    0x00000007,
-	"setting": 0x00000008,
-	"media":   0x00000009,
-	"radio":   0x0000000A,
-	"navi":    0x0000000B,
-	"src":     0x0000000C,
-	"mode":    0x0000000D,
-	"back":    0x0000000E,
-	"seekSub": 0x0000000F,
-	"seekAdd": 0x00000010,
-	"volSub":  0x00000011,
-	"volAdd":  0x00000012,
-	"mute":    0x00000013,
-	"ok":      0x00000014,
-	"left":    0x00000015,
-	"right":   0x00000016,
-	"up":      0x00000017,
-	"down":    0x00000018,
-	"tel":     0x0000001D,
-	"main":    0x0000001E,
-}
+// CarLife hard key codes, table 10.6-1 of the protocol guide. The reference head unit
+// numbers them the same way (CommonParams.KEYCODE_*) and its control panel sends exactly
+// one of these per button (ControlTestWindow).
+const (
+	keyPhoneCall    = 0x00000002 // place or answer a call
+	keyPhoneEnd     = 0x00000003 // hang up
+	keySelectorNext = 0x00000006 // focus the next item in the current region
+	keySelectorPrev = 0x00000007 // focus the previous item
+	keyBack         = 0x0000000E // back to the previous CarLife screen
+	keySeekSub      = 0x0000000F // previous track
+	keySeekAdd      = 0x00000010 // next track
+	keyMute         = 0x00000013 // mute the microphone while on a call
+	keyOK           = 0x00000014 // confirm the focused item
+	keyMoveLeft     = 0x00000015 // focus the region to the left
+	keyMoveRight    = 0x00000016 // focus the region to the right
+	keyMain         = 0x0000001E // the CarLife home screen
+	keyMediaStart   = 0x0000001F // play
+	keyMediaStop    = 0x00000020 // pause
+	keyVRStart      = 0x00000021 // open the voice recognition screen
+	keyVRStop       = 0x00000022 // close it
+)
+
+// Call states the phone reports over EV_TELE_STATE.
+const (
+	callStateIdle = iota
+	callStateIncoming
+	callStateOutgoing
+	callStateInCall
+)
 
 func (s *session) handleClientMessage(data []byte) {
 	var message clientMessage
@@ -636,8 +651,14 @@ func (s *session) handleClientMessage(data []byte) {
 	case "keyframe":
 		// CarLife has no way to ask the phone for a keyframe; the encoder restarts on
 		// its own GOP, so the request is dropped.
-	case "night", "telephony", "siri":
-		// CarPlay-only controls with no CarLife equivalent.
+	case "night":
+		// CarPlay-only control with no CarLife equivalent.
+	case "siri":
+		s.handleSiri()
+	case "telephony":
+		if message.Telephony != nil {
+			s.handleTelephony(*message.Telephony)
+		}
 	default:
 	}
 }
@@ -707,51 +728,95 @@ func (s *session) handleTouch(contacts []touchContact) {
 	}
 }
 
-// handleKnob translates a CarPlay knob event into the matching CarLife hard key.
-// Directional flicks become the four arrow keys; select/home/back map directly.
+// handleKnob translates a knob event from the client into CarLife hard keys. CarLife
+// has no knob of its own, so the four directions are emulated with the two families of
+// keycodes the protocol does offer: Selector_Previous/Next move the focus within the
+// current region (what turning a knob does) and Move_Left/Right jump to the neighbouring
+// region. Move_Up/Down exist as well, but the phone ignores them on its list screens while
+// it does act on Selector, and Selector has no horizontal counterpart - hence one family
+// per axis.
 func (s *session) handleKnob(knob knobState) {
-	key := ""
 	switch {
 	case knob.Select:
-		key = "ok"
+		s.sendHardKey(keyOK)
 	case knob.Home:
-		key = "home"
+		s.sendHardKey(keyMain)
 	case knob.Back:
-		key = "back"
+		s.sendHardKey(keyBack)
 	case knob.X < 0:
-		key = "left"
+		s.sendHardKey(keyMoveLeft)
 	case knob.X > 0:
-		key = "right"
+		s.sendHardKey(keyMoveRight)
 	case knob.Y < 0:
-		key = "up"
+		s.sendHardKey(keySelectorPrev)
 	case knob.Y > 0:
-		key = "down"
-	default:
-		return
+		s.sendHardKey(keySelectorNext)
 	}
-	s.sendHardKey(key)
 }
 
-// handleMedia maps the playport media button indices onto CarLife hard keys:
-// 3 = play/pause, 4 = next track, 5 = previous track.
+// handleMedia maps the playport media button indices onto CarLife hard keys: 3 = play or
+// pause, 4 = next track, 5 = previous track. The reference head unit routes Android's
+// KEYCODE_MEDIA_PREVIOUS/NEXT to Seek_Sub/Add the same way (MediaButtonReceiver) and gives
+// play and pause a button each (ControlTestWindow), so the single button here alternates.
 func (s *session) handleMedia(index int) {
 	switch index {
 	case 3:
-		s.sendHardKey("media")
+		s.mu.Lock()
+		playing := s.mediaPlaying
+		s.mediaPlaying = !playing
+		s.mu.Unlock()
+		if playing {
+			s.sendHardKey(keyMediaStop)
+			return
+		}
+		s.sendHardKey(keyMediaStart)
 	case 4:
-		s.sendHardKey("next")
+		s.sendHardKey(keySeekAdd)
 	case 5:
-		s.sendHardKey("prev")
+		s.sendHardKey(keySeekSub)
 	}
 }
 
-func (s *session) sendHardKey(name string) {
-	code, ok := hardKeyCodes[name]
-	if !ok {
+// handleTelephony maps playport's call buttons onto CarLife hard keys: 1 = answer or end,
+// 2 = mute the call microphone. Answering and hanging up are two keys in CarLife, so the
+// call state the phone reports decides which one the single button sends.
+func (s *session) handleTelephony(action int) {
+	switch action {
+	case 1:
+		s.mu.Lock()
+		inCall := s.callState == callStateInCall
+		s.mu.Unlock()
+		if inCall {
+			s.sendHardKey(keyPhoneEnd)
+			return
+		}
+		s.sendHardKey(keyPhoneCall)
+	case 2:
+		s.sendHardKey(keyMute)
+	}
+}
+
+// handleSiri opens and closes CarLife's voice recognition screen. The client sends a single
+// event per press, but CarLife has a key for each direction, so the two alternate.
+//
+// Recognition itself needs a microphone, which is a separate gap: the feature configuration
+// we report says the vehicle microphone is used (VOICE_MIC=0), and the phone then waits for
+// PCM on the VR channel, which we never send.
+func (s *session) handleSiri() {
+	s.mu.Lock()
+	active := !s.voiceActive
+	s.voiceActive = active
+	s.mu.Unlock()
+	if active {
+		s.sendHardKey(keyVRStart)
 		return
 	}
+	s.sendHardKey(keyVRStop)
+}
+
+func (s *session) sendHardKey(code uint32) {
 	if err := s.host.sendHardKey(code); err != nil {
-		log.Printf("failed to send hard key %s: %v", name, err)
+		log.Printf("failed to send hard key 0x%02X: %v", code, err)
 	}
 }
 

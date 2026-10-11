@@ -218,19 +218,39 @@ Go 侧不发这条命令，宿主就不会自己发起鉴权。（注意这只�
 | `GET /api/display` | width / height / fps / uiScale / hevc / orientation / presets |
 | `POST /api/display?token=` | 改分辨率与帧率，返回 `{"ok":true}` 或 `{"error":...}`；HEVC 与非法参数会被拒绝 |
 
-控制消息沿用 `WebHub.kt` 的 `ClientMessage` / `ServerMessage` 定义。CarLife 没有旋钮、
-Siri 和夜间模式，按下表映射：
+控制消息沿用 `WebHub.kt` 的 `ClientMessage` / `ServerMessage` 定义。CarLife 没有自己的旋钮，
+按下表映射（键值取指南表 10.6-1，与开源车机端 `CommonParams.KEYCODE_*` 一致）：
 
 | 前端消息 | CarLife 侧 |
 |---|---|
 | `touch` 的 contacts | 取 id 最小的那个触点，按按下状态映射 DOWN / MOVE / UP；空列表即 UP，坐标沿用最后位置（CarLife 只支持单点） |
-| `knob.select` / `home` / `back` | 硬按键 ok(0x14) / home(0x01) / back(0x0E) |
-| `knob.x` / `knob.y` 方向 | 硬按键 left / right / up / down |
-| `media` 3 / 4 / 5 | 硬按键 media(0x09) / next(0x06) / prev(0x07) |
+| `knob.select` / `home` / `back` | 硬按键 ok(0x14) / main(0x1E) / back(0x0E) |
+| `knob.x` 方向 | 硬按键 move left(0x15) / move right(0x16) |
+| `knob.y` 方向 | 硬按键 selector previous(0x07) / selector next(0x06) |
+| `media` 3 / 4 / 5 | 硬按键 media start(0x1F) 与 media stop(0x20) 交替 / seek add(0x10) / seek sub(0x0F) |
+| `telephony` 1 / 2 | 硬按键 phone call(0x02) 或 phone end(0x03)，按手机上报的通话状态选一个 / mute(0x13) |
+| `siri` | 硬按键 VR start(0x21) 与 VR stop(0x22) 交替 |
 | `keyframe` | 丢弃：CarLife 没有「请求关键帧」命令 |
-| `night` / `telephony` / `siri` | 丢弃：CarPlay 专属，CarLife 无对应 |
+| `night` | 丢弃：CarPlay 专属，CarLife 无对应 |
 | `ping` | 回 `{"type":"pong"}` |
 | 二进制帧（麦克风上行） | 丢弃：CarLife 的语音上行由手机发起 |
+
+几个容易踩错的地方：
+
+- **方向键分两族**。`selector previous/next` 是「在当前小区域里换焦点」（等于转旋钮），
+  `move left/right` 是「跳到左右相邻的小区域」。`move up/down` 协议里也有，但手机在列表界面上不响应
+  （实测发 0x17/0x18 无反应，发 0x07/0x06 焦点会上下移动），而 selector 没有横向版本，所以纵轴用
+  selector、横轴用 move。
+- **`home` 用 `main(0x1E)`**。`KEYCODE_Home(0x01)` 的含义是「按下手机的 Home 键」，会把 CarLife 切到
+  后台；「回到 CarLife 主界面」是 `KEYCODE_MAIN`，开源车机端的 Home 按钮发的也是它
+  （`ControlTestWindow`）。
+- **`media` 3 不能用 `KEYCODE_Media(0x09)`**。那一条的含义是「进入手机端 CarLife 的音乐播放界面」，
+  按下去只跳界面（实测如此）；播放/暂停要用 `media start(0x1F)` / `media stop(0x20)`。上一首/下一首用
+  `seek sub/add`，开源车机端把 Android 的 `KEYCODE_MEDIA_PREVIOUS/NEXT` 映射到这两条
+  （`MediaButtonReceiver`），不要用 `selector`。
+- **`siri` 只解决开关**。`VR start/stop` 能打开和关闭语音识别界面，但识别本身要麦克风：功能定制项里
+  我们报的是 `VOICE_MIC=0`（用车机麦克风），手机据此等 VR 通道上的 PCM，而我们不发（`vr ↑0`），
+  语音输入仍不通。要打通得改报 `VOICE_MIC=1`（用手机麦克风）或实现 VR 通道上行。
 
 前端的 contacts 只在手指按下期间存在：`pointerup` 把该触点从列表里直接删掉，而不是补发一条
 `down` 为假的记录（见 `input.ts` 的 `scheduleFlush`），所以抬手一定表现为「这个槽位在消息里
