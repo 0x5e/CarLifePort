@@ -34,10 +34,10 @@ const (
 )
 
 // These names travel over the wire and the browser shows them directly as volume
-// slider labels, so they stay in the front end's display language.
+// slider labels, so they follow the language of the unmodified playport client.
 const (
-	streamNameMedia = "媒体"
-	streamNameTTS   = "导航播报"
+	streamNameMedia = "Media"
+	streamNameTTS   = "Navigation"
 )
 
 func encodeVideoConfig(streamType byte, width, height int, avcC []byte) []byte {

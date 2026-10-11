@@ -11,10 +11,14 @@ import (
 	"time"
 )
 
+const defaultWebDir = "vendor/playport/web/dist"
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
 	hostSocket := flag.String("host-socket", "/tmp/carlife-host.sock", "Unix socket path of carlife-host")
-	webDir := flag.String("web", "web/dist", "static web asset directory")
+	webDir := flag.String("web", defaultWebDir, "static web asset directory")
+	token := flag.String("token", "carlife", "access token the browser client must present")
+	deviceName := flag.String("device-name", "CarLife", "head unit name shown in the web client")
 	width := flag.Int("width", 1280, "requested phone video width")
 	height := flag.Int("height", 720, "requested phone video height")
 	fps := flag.Int("fps", 30, "requested phone video frame rate")
@@ -23,13 +27,19 @@ func main() {
 	log.SetFlags(log.Ltime)
 
 	if _, err := os.Stat(*webDir); err != nil {
-		log.Printf("warning: %s does not exist; run npm install && npm run build in web/ first", *webDir)
+		log.Printf("warning: %s does not exist; run ./scripts/build.sh to build the browser client", *webDir)
 	}
 
-	hub := newHub()
+	var sess *session
+
+	display := newDisplayState(*width, *height, *fps, func(width, height, fps int) error {
+		return sess.changeDisplay(width, height, fps)
+	})
+	hub := newHub(*token, *deviceName, display)
 	host := newHostClient(*hostSocket)
-	sess := newSession(host, hub, *width, *height, *fps)
+	sess = newSession(host, hub, *width, *height, *fps)
 	hub.session = sess
+
 	host.onEvent = sess.onHostEvent
 	host.onState = func(connected bool) {
 		// A host reconnect means the previous CarLife session is gone: carlife-host is
@@ -65,9 +75,9 @@ func main() {
 	}()
 
 	log.Printf("CarLife head unit service started")
-	log.Printf("  open browser  http://%s", *addr)
-	log.Printf("  web assets    %s", *webDir)
-	log.Printf("  waiting for   %s", *hostSocket)
+	log.Printf("  viewer URL   http://%s/?token=%s", *addr, *token)
+	log.Printf("  web assets   %s", *webDir)
+	log.Printf("  waiting for  %s", *hostSocket)
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("HTTP server exited: %v", err)

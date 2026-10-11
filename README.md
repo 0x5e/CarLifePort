@@ -5,11 +5,14 @@ CarLife 车机端（web 版）。服务端跑车机侧协议栈，浏览器用 W
 参考 [playport](https://github.com/youcci/playport) 的分层方式：车机协议在服务端，浏览器只负责解码显示。
 CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/carlife)（Apache-2.0）。
 
+浏览器端**直接原样使用 playport 的前端**（`vendor/playport/web`，不改动一行），本项目只
+实现它期望的那套后端接口。因此仓库里没有自己的 `web/` 目录。
+
 ## 架构
 
 ```
 手机 ──USB(AOA)──► carlife-usb-bridge ──TCP(127.0.0.1)──► carlife-host ──Unix socket──► carlifed ──WebSocket──► 浏览器
-      CarLife 协议      tools/usb-bridge      7200/8200/9200       host/            server/          web/
+      CarLife 协议      tools/usb-bridge      7200/8200/9200       host/            server/        playport 前端
                                             9201/9202/9300
 ```
 
@@ -19,8 +22,8 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 |---|---|---|
 | `tools/usb-bridge` | C | AOA 握手、USB 帧与六条本地 TCP 通道互转 |
 | `host` | C++ | 链接 `libcarlifevehicle`，跑协议栈，把回调数据转成帧 |
-| `server` | Go | 会话状态机、H.264 拆包、浏览器 WebSocket 服务 |
-| `web` | TypeScript | WebCodecs 解码、Web Audio 播放、触摸与按键上行 |
+| `server` | Go | 会话状态机、H.264 拆包、WebSocket 与 HTTP 接口（对齐 playport 服务端） |
+| `vendor/playport/web` | TypeScript | WebCodecs 解码、Web Audio 播放、输入上行（原样使用，不修改） |
 
 车辆侧各通道固定端口（与库的 `SOCKET_*_LOCALHOST_PORT` 对齐）：
 
@@ -48,7 +51,7 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 | USB 桥接层 | `tools/usb-bridge/carlife-usb-bridge` |
 | 车机协议栈宿主 | `host/carlife-host` |
 | Go 后端 | `server/carlifed` |
-| 前端 | `web/dist/` |
+| 前端（playport 原样构建） | `vendor/playport/web/dist/` |
 
 原生库要编译 protobuf 与 69 个 C++ 源文件，首次构建需数分钟；产物已存在时跳过。
 `build-native.sh` 会给 protobuf 2.5.0 打一个 3 行补丁（补上 `__aarch64__` 分支，
@@ -66,7 +69,9 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 
 三个进程的日志带 `[bridge]` / `[host]` / `[server]` 前缀输出到同一终端，Ctrl-C 停止全部。
 
-然后浏览器打开 <http://127.0.0.1:8080>。
+然后浏览器打开脚本打印的那个地址（默认 <http://127.0.0.1:8080/?token=carlife>）。
+地址里的 `token` 是 playport 前端要求的访问令牌，缺了它前端不会建立连接。
+首次打开后令牌会存在 localStorage，之后直接访问 <http://127.0.0.1:8080> 也可以。
 
 ### 手机什么时候插都行
 
@@ -99,18 +104,43 @@ tools/usb-bridge/carlife-usb-bridge          # 只跑桥接层
 host/carlife-host -v                         # 只跑宿主；默认静音，-v 保留库日志
 server/carlifed --addr 127.0.0.1:8080 \
                 --host-socket /tmp/carlife-host.sock \
-                --web web/dist \
+                --web vendor/playport/web/dist \
+                --token carlife \
                 --width 1280 --height 720 --fps 30
-cd web && npm run dev                        # 前端热更新，代理 /ws 与 /api 到 8080
 ```
 
-改前端代码时用 `npm run dev`（vite 开发服务器）。它把 `/ws` 与 `/api` 代理到
-8080，因此仍需另起 `carlifed`，不要用 `web/dist` 调试。
+## 与 playport 前端的接口对齐
+
+`server/` 实现的正是 playport 服务端的那套契约，前端因此可以直接用：
+
+| 接口 | 内容 |
+|---|---|
+| `GET /ws?token=` | 令牌不符直接按策略违规关闭。接入后先发 `hello`，再回放已缓存的 video/audio 配置，然后才把该 viewer 计入广播 |
+| `GET /api/status` | deviceName / sessionActive / phone / viewers / display |
+| `GET /api/display` | width / height / fps / uiScale / hevc / orientation / presets |
+| `POST /api/display?token=` | 改分辨率与帧率，返回 `{"ok":true}` 或 `{"error":...}`；HEVC 与非法参数会被拒绝 |
+
+控制消息沿用 `WebHub.kt` 的 `ClientMessage` / `ServerMessage` 定义。CarLife 没有旋钮、
+Siri 和夜间模式，按下表映射：
+
+| 前端消息 | CarLife 侧 |
+|---|---|
+| `touch` 的 contacts | 取 id 最小的那个触点，按按下状态映射 DOWN / MOVE / UP；空列表即 UP（CarLife 只支持单点） |
+| `knob.select` / `home` / `back` | 硬按键 ok(0x14) / home(0x01) / back(0x0E) |
+| `knob.x` / `knob.y` 方向 | 硬按键 left / right / up / down |
+| `media` 3 / 4 / 5 | 硬按键 media(0x09) / next(0x06) / prev(0x07) |
+| `keyframe` | 丢弃：CarLife 没有「请求关键帧」命令 |
+| `night` / `telephony` / `siri` | 丢弃：CarPlay 专属，CarLife 无对应 |
+| `ping` | 回 `{"type":"pong"}` |
+| 二进制帧（麦克风上行） | 丢弃：CarLife 的语音上行由手机发起 |
+
+音频流名走 wire 传到前端直接作为音量滑块标签，所以用英文 `Media` / `Navigation`。
 
 ## 已知限制
 
 - 只实现有线（AOA）通路，无线 CarLife 未实现。
-- 触摸是单点，CarLife 协议本身不支持多指。
+- 触摸是单点，CarLife 协议本身不支持多指：前端的多点触点只有 id 最小的那个生效。
+- 麦克风上行未接通：CarLife 的语音通道由手机发起，服务端不向浏览器请求麦克风。
 - 视频只有 H.264；音频按 16 位 PCM 处理。
 - 重新插拔要重建 `carlife-host`，`run.sh` 会自动做；手工单独运行时需自己重启。
 - 手机侧 CarLife App 是系统在 accessory 附着时拉起的，比链路就绪慢几秒。`carlifed`

@@ -21,7 +21,8 @@ cd "$ROOT"
 BRIDGE="tools/usb-bridge/carlife-usb-bridge"
 HOST="host/carlife-host"
 SERVER="server/carlifed"
-WEB="web/dist"
+TOKEN="carlife"
+WEB="vendor/playport/web/dist"
 
 # ---------------------------------------------------------------- prechecks
 for f in "$BRIDGE" "$HOST" "$SERVER"; do
@@ -78,9 +79,9 @@ start() {
     printf '== started %-7s pid %s\n' "$name" "$LAST_PID"
 }
 
-cat <<'EOF'
+cat <<EOF
 
-== open http://127.0.0.1:8080 in a browser
+== open http://127.0.0.1:8080/?token=$TOKEN in a browser
 == open the CarLife app on the phone and confirm the connection
 == the phone may be plugged in before or after this script starts
 == unplugging and replugging the phone rebuilds the link automatically
@@ -88,7 +89,7 @@ cat <<'EOF'
 
 EOF
 
-start server "$SERVER"
+start server "$SERVER" --token "$TOKEN"
 server_pid=$LAST_PID
 PIDS=("$server_pid")
 

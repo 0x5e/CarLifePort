@@ -16,6 +16,18 @@ import (
 // middle of a long GOP can only wait; this keeps the wait finite.
 const keyframeWaitFallback = 10 * time.Second
 
+// serverMessage is the JSON control message the playport web client understands.
+// Field names and semantics mirror ServerMessage in WebHub.kt.
+type serverMessage struct {
+	Type          string `json:"type"`
+	DeviceName    string `json:"deviceName,omitempty"`
+	SessionActive bool   `json:"sessionActive,omitempty"`
+	Width         int    `json:"width,omitempty"`
+	Height        int    `json:"height,omitempty"`
+	Viewers       int    `json:"viewers"`
+	Message       string `json:"message,omitempty"`
+}
+
 type outbound struct {
 	text bool
 	data []byte
@@ -34,9 +46,14 @@ type viewer struct {
 
 // Hub manages all browser viewers and forwards their control messages to the upstream session.
 type Hub struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+
+	token      string
+	deviceName string
+	display    *displayState
+	session    *session
+
 	viewers map[*viewer]struct{}
-	session *session
 
 	// Most recent codec setup per stream, replayed to a viewer that joins after the
 	// stream already started. Without it such a viewer receives video frames but never
@@ -45,8 +62,11 @@ type Hub struct {
 	audioConfig map[byte][]byte
 }
 
-func newHub() *Hub {
+func newHub(token, deviceName string, display *displayState) *Hub {
 	return &Hub{
+		token:       token,
+		deviceName:  deviceName,
+		display:     display,
 		viewers:     make(map[*viewer]struct{}),
 		videoConfig: make(map[byte][]byte),
 		audioConfig: make(map[byte][]byte),
@@ -56,6 +76,7 @@ func newHub() *Hub {
 func (h *Hub) Routes(webDir string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", h.serveWebSocket)
+	mux.HandleFunc("/api/status", h.serveStatus)
 	mux.HandleFunc("/api/display", h.serveDisplay)
 	mux.Handle("/", http.FileServer(http.Dir(webDir)))
 	return mux
@@ -106,12 +127,10 @@ func (h *Hub) BroadcastVideoConfig(frame []byte) {
 	h.mu.Lock()
 	h.videoConfig[videoStreamType] = frame
 	now := time.Now()
+	viewers := make([]*viewer, 0, len(h.viewers))
 	for v := range h.viewers {
 		v.ready = false
 		v.waitedSince = now
-	}
-	viewers := make([]*viewer, 0, len(h.viewers))
-	for v := range h.viewers {
 		viewers = append(viewers, v)
 	}
 	h.mu.Unlock()
@@ -176,6 +195,16 @@ func (h *Hub) BroadcastJSON(value any) {
 }
 
 func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("token") != h.token {
+		log.Printf("rejected a WebSocket connection from %s: invalid token", r.RemoteAddr)
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		_ = conn.Close(websocket.StatusPolicyViolation, "invalid token")
+		return
+	}
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Local tool: allow the page to be opened from any origin.
 		InsecureSkipVerify: true,
@@ -205,10 +234,22 @@ func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Send the handshake and the current codec setup before the viewer takes part in
 	// broadcasts, so that no video frame can overtake the configuration it needs.
+	h.mu.Lock()
+	hello := serverMessage{
+		Type:          "hello",
+		DeviceName:    h.deviceName,
+		SessionActive: h.session.isActive(),
+		Width:         h.display.Width,
+		Height:        h.display.Height,
+		Viewers:       len(h.viewers) + 1,
+		Message:       h.session.phoneName(),
+	}
+	h.mu.Unlock()
 	select {
-	case v.send <- outbound{text: true, data: mustJSON(serverMessage{Type: "hello", DeviceName: "CarLife"})}:
+	case v.send <- outbound{text: true, data: mustJSON(hello)}:
 	default:
 	}
+
 	h.mu.Lock()
 	for _, frame := range h.videoConfig {
 		select {
@@ -226,19 +267,48 @@ func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	h.add(v)
 	log.Printf("viewer %s connected (%d total)", v.peer, h.count())
-	if h.session != nil {
-		h.session.broadcastState()
-	}
+	h.session.broadcastState()
 
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
 			return
 		}
-		if h.session != nil {
-			h.session.handleClientMessage(data)
+		// Anything that is not JSON is microphone uplink (0x10 LPCM / 0x11 Opus).
+		// CarLife voice uplink is driven by the phone, not by the head unit, so it is
+		// discarded.
+		if !isJSONPayload(data) {
+			continue
 		}
+		if messageType(data) == "ping" {
+			select {
+			case v.send <- outbound{text: true, data: []byte(`{"type":"pong"}`)}:
+			default:
+			}
+			continue
+		}
+		h.session.handleClientMessage(data)
 	}
+}
+
+func isJSONPayload(data []byte) bool {
+	for _, b := range data {
+		if b == ' ' || b == '\n' || b == '\r' || b == '\t' {
+			continue
+		}
+		return b == '{'
+	}
+	return false
+}
+
+func messageType(data []byte) string {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return ""
+	}
+	return probe.Type
 }
 
 func writeViewer(ctx context.Context, v *viewer) {
@@ -269,69 +339,93 @@ func mustJSON(value any) []byte {
 	return data
 }
 
-/* ----------------------------------------------------------------- display settings */
+/* ----------------------------------------------------------------- status API */
 
-type displayPreset struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
-}
-
-type displayInfo struct {
-	Width   int             `json:"width"`
-	Height  int             `json:"height"`
-	FPS     int             `json:"fps"`
-	Presets []displayPreset `json:"presets"`
-}
-
-// Common screen modes for CarLife head units.
-var displayPresets = []displayPreset{
-	{Width: 800, Height: 480},
-	{Width: 1024, Height: 600},
-	{Width: 1280, Height: 720},
-	{Width: 1280, Height: 480},
-	{Width: 1920, Height: 720},
+func (h *Hub) serveStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	h.mu.Lock()
+	payload := map[string]any{
+		"deviceName":    h.deviceName,
+		"sessionActive": h.session.isActive(),
+		"phone":         h.session.phoneName(),
+		"viewers":       len(h.viewers),
+		"display": map[string]any{
+			"width":       h.display.Width,
+			"height":      h.display.Height,
+			"fps":         h.display.FPS,
+			"uiScale":     h.display.UIScale,
+			"hevc":        h.display.HEVC,
+			"orientation": h.display.orientation(),
+		},
+	}
+	h.mu.Unlock()
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (h *Hub) serveDisplay(w http.ResponseWriter, r *http.Request) {
-	sess := h.session
-	if sess == nil {
-		http.Error(w, "session not ready", http.StatusServiceUnavailable)
-		return
-	}
-
 	if r.Method == http.MethodPost {
-		var request struct {
-			Width  int `json:"width"`
-			Height int `json:"height"`
-			FPS    int `json:"fps"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, "request body is not valid JSON", http.StatusBadRequest)
-			return
-		}
-		if request.Width < 320 || request.Width > 3840 || request.Height < 240 || request.Height > 2160 {
-			http.Error(w, "resolution out of range", http.StatusBadRequest)
-			return
-		}
-		sess.handleDisplayChange(clientMessage{
-			Width:  request.Width,
-			Height: request.Height,
-			FPS:    request.FPS,
-		})
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		h.applyDisplay(w, r)
 		return
 	}
-
-	sess.mu.Lock()
-	info := displayInfo{
-		Width:   sess.requestedWidth,
-		Height:  sess.requestedHeight,
-		FPS:     sess.requestedFPS,
-		Presets: displayPresets,
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
-	sess.mu.Unlock()
+	h.mu.Lock()
+	payload := map[string]any{
+		"width":       h.display.Width,
+		"height":      h.display.Height,
+		"fps":         h.display.FPS,
+		"uiScale":     h.display.UIScale,
+		"hevc":        h.display.HEVC,
+		"orientation": h.display.orientation(),
+		"presets":     h.display.Presets,
+	}
+	h.mu.Unlock()
+	writeJSON(w, http.StatusOK, payload)
+}
 
+func (h *Hub) applyDisplay(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("token") != h.token {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid token"})
+		return
+	}
+	var request struct {
+		Width   int  `json:"width"`
+		Height  int  `json:"height"`
+		FPS     int  `json:"fps"`
+		UIScale int  `json:"uiScale"`
+		HEVC    bool `json:"hevc"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "malformed request"})
+		return
+	}
+	h.mu.Lock()
+	display := h.display
+	h.mu.Unlock()
+
+	if err := display.validate(request.Width, request.Height, request.FPS, request.HEVC); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := display.apply(request.Width, request.Height, request.FPS); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(info)
+	w.WriteHeader(status)
+	_, _ = w.Write(data)
 }

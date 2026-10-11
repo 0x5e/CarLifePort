@@ -17,27 +17,32 @@ const (
 	watchdogIdleTimeout = 5 * time.Second
 )
 
-type serverMessage struct {
-	Type          string `json:"type"`
-	DeviceName    string `json:"deviceName,omitempty"`
-	DeviceModel   string `json:"deviceModel,omitempty"`
-	SessionActive bool   `json:"sessionActive,omitempty"`
-	HostReady     bool   `json:"hostReady,omitempty"`
-	Width         int    `json:"width,omitempty"`
-	Height        int    `json:"height,omitempty"`
-	Message       string `json:"message,omitempty"`
+// clientMessage is the JSON control message the playport web client sends. It mirrors
+// ClientMessage in WebHub.kt: CarLife has no knob, no Siri and no night mode, so those
+// fields are translated to the closest CarLife hard key or dropped.
+type clientMessage struct {
+	Type      string         `json:"type"`
+	Contacts  []touchContact `json:"contacts"`
+	Media     *int           `json:"media"`
+	Knob      *knobState     `json:"knob"`
+	Night     *bool          `json:"night"`
+	Telephony *int           `json:"telephony"`
 }
 
-// clientMessage is a JSON control message sent by the browser.
-type clientMessage struct {
-	Type   string  `json:"type"`
-	X      float64 `json:"x"`
-	Y      float64 `json:"y"`
-	Down   bool    `json:"down"`
-	Key    string  `json:"key"`
-	Width  int     `json:"width"`
-	Height int     `json:"height"`
-	FPS    int     `json:"fps"`
+type touchContact struct {
+	ID   int     `json:"id"`
+	X    float64 `json:"x"`
+	Y    float64 `json:"y"`
+	Down bool    `json:"down"`
+}
+
+type knobState struct {
+	Select bool `json:"select"`
+	Home   bool `json:"home"`
+	Back   bool `json:"back"`
+	X      int  `json:"x"`
+	Y      int  `json:"y"`
+	Wheel  int  `json:"wheel"`
 }
 
 // session tracks CarLife session state: handshake progression, audio/video forwarding, and dispatch of browser commands.
@@ -451,45 +456,70 @@ func (s *session) handleClientMessage(data []byte) {
 	}
 	switch message.Type {
 	case "touch":
-		s.handleTouch(message)
-	case "key":
-		if code, ok := hardKeyCodes[message.Key]; ok {
-			if err := s.host.sendHardKey(code); err != nil {
-				log.Printf("failed to send hard key %s: %v", message.Key, err)
-			}
+		s.handleTouch(message.Contacts)
+	case "knob":
+		if message.Knob != nil {
+			s.handleKnob(*message.Knob)
 		}
-	case "foreground":
-		_ = s.host.sendGoToForeground()
-	case "display":
-		s.handleDisplayChange(message)
+	case "media":
+		if message.Media != nil {
+			s.handleMedia(*message.Media)
+		}
+	case "keyframe":
+		// CarLife has no way to ask the phone for a keyframe; the encoder restarts on
+		// its own GOP, so the request is dropped.
+	case "night", "telephony", "siri":
+		// CarPlay-only controls with no CarLife equivalent.
+	default:
 	}
 }
 
-func (s *session) handleTouch(message clientMessage) {
+// handleTouch maps the playport contact list onto CarLife's single-pointer protocol.
+// An empty contact list means every finger lifted, which is the UP event.
+func (s *session) handleTouch(contacts []touchContact) {
 	s.mu.Lock()
 	width, height := s.width, s.height
+	if width <= 0 || height <= 0 {
+		width, height = s.requestedWidth, s.requestedHeight
+	}
 	wasDown := s.touchDown
-	s.touchDown = message.Down
 	s.mu.Unlock()
 
 	if width <= 0 || height <= 0 {
 		return
 	}
 
-	var action int32
-	switch {
-	case message.Down && !wasDown:
-		action = motionDown
-	case message.Down && wasDown:
-		action = motionMove
-	case !message.Down && wasDown:
-		action = motionUp
-	default:
+	if len(contacts) == 0 {
+		if !wasDown {
+			return
+		}
+		s.mu.Lock()
+		s.touchDown = false
+		s.mu.Unlock()
+		if err := s.host.sendTouch(motionUp, 0, 0); err != nil {
+			log.Printf("failed to send touch release: %v", err)
+		}
 		return
 	}
 
-	x := int32(clampFloat(message.X, 0, 1) * float64(width))
-	y := int32(clampFloat(message.Y, 0, 1) * float64(height))
+	contact := contacts[0]
+	for _, other := range contacts[1:] {
+		if other.ID < contact.ID {
+			contact = other
+		}
+	}
+
+	s.mu.Lock()
+	s.touchDown = true
+	s.mu.Unlock()
+
+	var action int32 = motionMove
+	if !wasDown {
+		action = motionDown
+	}
+
+	x := int32(clampFloat(contact.X, 0, 1) * float64(width))
+	y := int32(clampFloat(contact.Y, 0, 1) * float64(height))
 	if x >= int32(width) {
 		x = int32(width) - 1
 	}
@@ -501,46 +531,115 @@ func (s *session) handleTouch(message clientMessage) {
 	}
 }
 
-func (s *session) handleDisplayChange(message clientMessage) {
-	if message.Width <= 0 || message.Height <= 0 {
+// handleKnob translates a CarPlay knob event into the matching CarLife hard key.
+// Directional flicks become the four arrow keys; select/home/back map directly.
+func (s *session) handleKnob(knob knobState) {
+	key := ""
+	switch {
+	case knob.Select:
+		key = "ok"
+	case knob.Home:
+		key = "home"
+	case knob.Back:
+		key = "back"
+	case knob.X < 0:
+		key = "left"
+	case knob.X > 0:
+		key = "right"
+	case knob.Y < 0:
+		key = "up"
+	case knob.Y > 0:
+		key = "down"
+	default:
 		return
 	}
-	fps := message.FPS
+	s.sendHardKey(key)
+}
+
+// handleMedia maps the playport media button indices onto CarLife hard keys:
+// 3 = play/pause, 4 = next track, 5 = previous track.
+func (s *session) handleMedia(index int) {
+	switch index {
+	case 3:
+		s.sendHardKey("media")
+	case 4:
+		s.sendHardKey("next")
+	case 5:
+		s.sendHardKey("prev")
+	}
+}
+
+func (s *session) sendHardKey(name string) {
+	code, ok := hardKeyCodes[name]
+	if !ok {
+		return
+	}
+	if err := s.host.sendHardKey(code); err != nil {
+		log.Printf("failed to send hard key %s: %v", name, err)
+	}
+}
+
+// changeDisplay renegotiates the video mode. It is called from the /api/display handler.
+func (s *session) changeDisplay(width, height, fps int) error {
+	if width <= 0 || height <= 0 {
+		return fmt.Errorf("width and height must be positive")
+	}
 	if fps <= 0 {
 		fps = s.requestedFPS
 	}
 	s.mu.Lock()
-	s.requestedWidth, s.requestedHeight, s.requestedFPS = message.Width, message.Height, fps
+	s.requestedWidth, s.requestedHeight, s.requestedFPS = width, height, fps
 	s.mu.Unlock()
 
-	log.Printf("switching video mode to %dx%d@%d", message.Width, message.Height, fps)
-	go func() {
-		// Reset the encoder first, then renegotiate with the new mode; otherwise the phone will not start producing frames again.
-		_ = s.host.send(chCmd, cmdVideoEncoderReset, nil)
-		time.Sleep(300 * time.Millisecond)
-		s.mu.Lock()
-		s.streaming = false
-		s.avcC = nil
-		s.mu.Unlock()
-		_ = s.host.sendVideoEncoderInit(int32(message.Width), int32(message.Height), int32(fps))
-	}()
+	log.Printf("switching video mode to %dx%d@%d", width, height, fps)
+	// Reset the encoder first, then renegotiate with the new mode; otherwise the phone
+	// will not start producing frames again.
+	_ = s.host.send(chCmd, cmdVideoEncoderReset, nil)
+	s.mu.Lock()
+	s.streaming = false
+	s.avcC = nil
+	s.mu.Unlock()
+	if err := s.host.sendVideoEncoderInit(int32(width), int32(height), int32(fps)); err != nil {
+		return fmt.Errorf("carlife-host is not connected")
+	}
+	return nil
 }
 
 /* ---------------------------------------------------------------------- broadcast */
 
+// isActive reports whether the phone is currently producing video.
+func (s *session) isActive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.streaming
+}
+
+// phoneName is the model name reported by the phone, shown as the connected device.
+func (s *session) phoneName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deviceName
+}
+
 func (s *session) broadcastState() {
 	s.mu.Lock()
-	message := serverMessage{
-		Type:          "session",
-		DeviceName:    s.deviceName,
-		DeviceModel:   s.deviceModel,
-		SessionActive: s.streaming,
-		HostReady:     s.hostReady,
-		Width:         s.width,
-		Height:        s.height,
+	active := s.streaming
+	width, height := s.width, s.height
+	if width <= 0 || height <= 0 {
+		width, height = s.requestedWidth, s.requestedHeight
 	}
+	phone := s.deviceName
 	s.mu.Unlock()
-	s.hub.BroadcastJSON(message)
+
+	s.hub.BroadcastJSON(serverMessage{
+		Type:          "session",
+		DeviceName:    s.hub.deviceName,
+		SessionActive: active,
+		Width:         width,
+		Height:        height,
+		Viewers:       s.hub.count(),
+		Message:       phone,
+	})
 }
 
 func clampFloat(value, low, high float64) float64 {
