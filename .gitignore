@@ -4,18 +4,15 @@
 # Agent 工作数据（本地记忆、缓存）
 .workbuddy/
 
-# 构建产物
+# 构建产物：可运行的那一份全在 dist/（carlifed / carlife-host / carlife-usb-bridge /
+# libcarlifevehicle.dylib / web），中间物在 .build/
+dist/
+.build/
+
+# 探测工具（不由 build.sh 构建，留在原地）
 tools/aoa-probe/aoa-probe
 tools/aoa-probe/*.o
 tools/aoa-probe/*.dSYM/
-tools/usb-bridge/carlife-usb-bridge
+
+# 编译中间物
 tools/usb-bridge/*.o
-tools/usb-bridge/*.dSYM/
-host/carlife-host
-host/*.o
-.build/
-
-# 前端（vendor/playport/web 原样构建，产物被子模块自身的 .gitignore 忽略）
-
-# Go
-server/carlifed

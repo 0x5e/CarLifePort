@@ -44,15 +44,19 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 ./scripts/build.sh --native # 只构建原生库（host/Makefile 内部调用）
 ```
 
-按顺序构建五段，产物均不进入版本库：
+按顺序构建五段。可运行的那一份全在 `dist/`，中间物在 `.build/`，两者都不进入版本库：
 
 | 步骤 | 产物 |
 |---|---|
-| 原生库（protobuf 2.5.0 + CarLife 协议栈） | `.build/lib/libcarlifevehicle.dylib` |
-| USB 桥接层 | `tools/usb-bridge/carlife-usb-bridge` |
-| 车机协议栈宿主 | `host/carlife-host` |
-| Go 后端 | `server/carlifed` |
-| 前端（playport 原样构建） | `vendor/playport/web/dist/` |
+| 原生库（protobuf 2.5.0 + CarLife 协议栈） | `dist/libcarlifevehicle.dylib` |
+| USB 桥接层 | `dist/carlife-usb-bridge` |
+| 车机协议栈宿主 | `dist/carlife-host` |
+| Go 后端 | `dist/carlifed` |
+| 前端（playport 原样构建后拷进来） | `dist/web/` |
+
+都放在同一层是有意的：`carlifed` 按「与自己相邻」去找桥接层、宿主和前端，所以整个 `dist/`
+可以拷到别处直接运行。原生库用 `@rpath` 安装名、宿主用 `@loader_path` rpath 去定位自己旁边
+那份 dylib，二进制里不留构建路径。
 
 原生库要编译 protobuf 与 69 个 C++ 源文件，首次构建需数分钟；产物已存在时跳过。
 `build.sh` 会给 protobuf 2.5.0 打一个 3 行补丁（补上 `__aarch64__` 分支，
@@ -61,16 +65,20 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 ## 运行
 
 ```sh
-./scripts/run.sh
+dist/carlifed
 ```
 
-脚本依次做三件事：检查桌面版微信是否在运行（它独占 USB 设备，检测到会直接中止并
-提示）→ 复位手机 USB 模式（清 accessory 残留、停掉 adb server）→ 启动
-`carlife-usb-bridge`、`carlife-host`、`carlifed`。
+一个进程就是全部。`carlifed` 启动时依次做：
 
-三个进程的日志带 `[bridge]` / `[host]` / `[server]` 前缀输出到同一终端，Ctrl-C 停止全部。
+1. 检查桌面版微信是否在运行 —— 它自己会对 Android 做 AOA 握手并独占整个 USB 设备，
+   检测到就直接中止并提示；
+2. 复位手机 USB 模式（清 accessory 残留、停掉 adb server），没有手机或没有 adb 只是提示；
+3. 把 `carlife-usb-bridge` 与 `carlife-host` 作为子进程拉起来，两者任一个退出就把这一对
+   一起重启（拔插手机就是这条路）。
 
-然后浏览器打开脚本打印的任意一个地址。默认监听 `0.0.0.0:8080`，启动时会像 vite
+三个进程的日志带 `[bridge]` / `[host]` 前缀输出到同一终端，Ctrl-C 停止全部。
+
+然后浏览器打开 `carlifed` 打印的任意一个地址。默认监听 `0.0.0.0:8080`，启动时会像 vite
 一样把每张网卡的地址都打出来（带网卡名）：
 
 ```
@@ -93,32 +101,42 @@ localhost 例外。自签证书浏览器会报「不安全」，接受一次即�
 首次打开后令牌会存在 localStorage，之后不带 `?token=` 直接访问也可以；但令牌变了以后
 localStorage 里还是旧值，需要用带新 `?token=` 的地址再打开一次。
 
-### 服务端配置（环境变量）
+### 配置（环境变量）
 
-监听地址、请求帧率与访问令牌由环境变量控制，不再是命令行参数；默认值就在 `server/main.go` 里，
-`run.sh` 不重复声明。三者对 `./scripts/run.sh` 与直接运行 `server/carlifed` 都生效：
+参数只有一种传递方式：`CL_` 前缀的环境变量。没有命令行参数，`carlifed --help` 列出全部；
+默认值就写在 `server/main.go` 里，启动命令里不需要重复一遍：
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `ADDR` | `0.0.0.0:8080` | HTTP 监听地址 |
-| `FPS` | `60` | 请求手机用的帧率（手机可能上限更低，见后文） |
-| `TOKEN` | `0` | 浏览器访问令牌 |
+| `CL_ADDR` | `0.0.0.0:8080` | HTTP 监听地址 |
+| `CL_TOKEN` | `0` | 浏览器访问令牌 |
+| `CL_FPS` | `60` | 请求手机用的帧率（手机可能上限更低，见后文） |
+| `CL_TLS` | `true` | 用自签证书开 HTTPS；`false` 只在 localhost 可用 |
+| `CL_WEB` | `<carlifed 目录>/web` | 前端静态资源目录 |
+| `CL_DEVICE_NAME` | `CarLife` | 前端显示的车机名 |
+| `CL_WIDTH` / `CL_HEIGHT` | `1280` / `720` | 请求手机的视频尺寸 |
+| `CL_SOCKET` | `/tmp/carlife-host.sock` | 宿主监听的 Unix socket，必须与 `host/protocol.h` 的 `CL_DEFAULT_SOCKET` 一致 |
+| `CL_CHANNEL` | `20000000` | 上报给手机的渠道号（见「车机身份上报」） |
+| `CL_CUID` | `CarLifePort` | 上报给手机的车机 id，指南要求每台唯一 |
+| `CL_SUPERVISE` | `true` | 是否由 carlifed 拉起并重启桥接层与宿主；`0` 表示只跑自身 |
+| `CL_BRIDGE` / `CL_HOST` | `<carlifed 目录>/carlife-usb-bridge`、`<carlifed 目录>/carlife-host` | 要拉起的那两个可执行文件 |
 
-其余选项（`--host-socket` / `--web` / `--device-name` / `--width` / `--height` / `--tls`）
-仍是命令行参数，`carlifed -h` 可查。
+`CL_BRIDGE` / `CL_HOST` / `CL_WEB` 给什么用什么，相对路径按当前工作目录解释。
+桥接层与宿主自己仍用命令行参数（它们是被拉起的两个，参数由 `carlifed` 组装），见
+「单独运行某个组件」。
 
 默认对外可访问（局域网内其它机器也能打开这个页面，上面就是手机画面和控制通道，
 保护只有这一层 token）。要限制成本机访问：
 
 ```sh
-ADDR=127.0.0.1:8080 ./scripts/run.sh      # 或 ADDR=127.0.0.1:8080 server/carlifed
+CL_ADDR=127.0.0.1:8080 dist/carlifed
 ```
 
 只在本机用、又不想看证书告警时，可以退回明文 http（仅 localhost 有安全上下文，
 所以只有本机能用）：
 
 ```sh
-ADDR=127.0.0.1:8080 server/carlifed --tls=false
+CL_ADDR=127.0.0.1:8080 CL_TLS=false dist/carlifed
 ```
 
 ### 手机什么时候插都行
@@ -127,7 +145,7 @@ ADDR=127.0.0.1:8080 server/carlifed --tls=false
 |---|---|
 | 启动前已插好 | 桥接层直接握手（accessory 残留已清），走完整 51/52/53 |
 | 启动后再插 | 桥接层轮询等待设备，插上即握手；宿主一直等 `127.0.0.1:7200`，不会超时退出 |
-| 运行中重新插拔 | 桥接层退出 → `run.sh` 重建 bridge 与 host → 重新握手出新会话 |
+| 运行中重新插拔 | 桥接层退出 → `carlifed` 重建 bridge 与 host → 重新握手出新会话 |
 
 三种情况下浏览器都不用刷新：`carlifed` 常驻，WebSocket 断开后自动重连；会话重建后
 前端会拿到新的编解码参数并重建解码器。
@@ -147,18 +165,20 @@ ADDR=127.0.0.1:8080 server/carlifed --tls=false
 ### 单独运行某个组件
 
 ```sh
-tools/usb-bridge/carlife-usb-bridge --list   # 枚举 USB 设备，并显示挑中的是哪个
-tools/usb-bridge/carlife-usb-bridge          # 只跑桥接层
-host/carlife-host -v                         # 只跑宿主；默认静音，-v 保留库日志
-server/carlifed --host-socket /tmp/carlife-host.sock \
-                --web vendor/playport/web/dist \
-                --width 1280 --height 720
+dist/carlife-usb-bridge --list   # 枚举 USB 设备，并显示挑中的是哪个
+dist/carlife-usb-bridge          # 只跑桥接层
+dist/carlife-host -v             # 只跑宿主；默认静音，-v 保留库日志
+CL_SUPERVISE=0 dist/carlifed     # 只跑后端，连一个已经在跑的宿主
 ```
 
-上面这条 `carlifed` 用的是默认的 `ADDR` / `FPS` / `TOKEN`；要改就加前缀，例如
-`ADDR=127.0.0.1:8080 server/carlifed ...`。
+这两个可执行文件仍用命令行参数（`--socket` / `--channel` / `--cuid` / `-v` / `--vid` /
+`--pid` / `--force-handshake`，各自的 `--help` 可查）：它们是被拉起的两个，
+正常情况下由 `carlifed` 组装参数，只有手工调试才直接运行。
 
-帧率默认 60，用环境变量覆盖：`FPS=30 ./scripts/run.sh`。实际帧率由手机
+`CL_SUPERVISE=0` 时 `carlifed` 只做 HTTP/WebSocket 服务，不检测微信、不动 adb、不拉子进程，
+宿主的 socket 路径用 `CL_SOCKET`（默认 `/tmp/carlife-host.sock`，与宿主自己的默认值一致）。
+
+帧率默认 60，用环境变量覆盖：`CL_FPS=30 dist/carlifed`。实际帧率由手机
 决定，后端每 5 秒打印一行实测值（`video: 29.8 fps received ...`），手机把帧率压低时也
 会打印（`phone limited the frame rate to 30`）。
 
@@ -272,6 +292,6 @@ Go 侧不发这条命令，宿主就不会自己发起鉴权。（注意这只�
   `encryptValue` 里的证书，开源库没有百度签发的证书。身份上报（17.2）已恢复，渠道号用开源车机端
   的默认值；手机是否接受这个值只能上机验证。手机侧的认证判定要彻底过掉，只能拿到百度签发的真值、
   逆向手机端 APK，或换用官方认证过的车机端实现。
-- 重新插拔要重建 `carlife-host`，`run.sh` 会自动做；手工单独运行时需自己重启。
+- 重新插拔要重建 `carlife-host`，`carlifed` 会自动做；`CL_SUPERVISE=0` 或手工单独运行时需自己重启。
 - 手机侧 CarLife App 是系统在 accessory 附着时拉起的，比链路就绪慢几秒。`carlifed`
   每 5 秒重发一次协议版本直到会话建立，用来覆盖这段延迟；一直连不上手机时会持续重发。

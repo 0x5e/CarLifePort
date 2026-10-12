@@ -2,19 +2,21 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 )
 
-const defaultWebDir = "vendor/playport/web/dist"
+// defaultSocketPath must match CL_DEFAULT_SOCKET in host/protocol.h: carlifed listens on
+// this socket and carlife-host connects to it.
+const defaultSocketPath = "/tmp/carlife-host.sock"
 
 // listenAddress is one address the browser client can be opened with, optionally
 // annotated with the interface it belongs to.
@@ -105,42 +107,139 @@ func envInt(name string, fallback int) int {
 	return parsed
 }
 
-func main() {
-	// These three are read from the environment instead of the command line, so that
-	// run.sh does not have to restate their defaults and a bare carlifed run behaves
-	// the same as the scripted one.
-	// HTTP listen address: the default is reachable from other machines on the LAN, and
-	// one viewer URL per interface is printed the way vite does. 127.0.0.1:8080 keeps
-	// the page on this machine only.
-	addr := envString("ADDR", "0.0.0.0:8080")
-	// Access token the browser client must present.
-	token := envString("TOKEN", "0")
-	// Requested frame rate; the phone may cap it and reports the rate it accepted in the
-	// log, so lower this if 60 is not accepted.
-	fps := envInt("FPS", 60)
+// envBool is envInt for switches. It takes what strconv.ParseBool takes, so both "1"/"0"
+// and "true"/"false" work.
+func envBool(name string, fallback bool) bool {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		log.Fatalf("%s=%q is not a boolean", name, value)
+	}
+	return parsed
+}
 
-	hostSocket := flag.String("host-socket", "/tmp/carlife-host.sock", "Unix socket path of carlife-host")
-	webDir := flag.String("web", defaultWebDir, "static web asset directory")
-	deviceName := flag.String("device-name", "CarLife", "head unit name shown in the web client")
-	width := flag.Int("width", 1280, "requested phone video width")
-	height := flag.Int("height", 720, "requested phone video height")
-	useTLS := flag.Bool("tls", true, "serve HTTPS with a self-signed certificate; plain http only works on localhost because the browser client needs a secure context")
-	flag.Parse()
+// config is everything carlifed can be told to do. It comes from CL_-prefixed environment
+// variables and from nothing else: there are no command-line flags, so whatever started
+// carlifed (a terminal, a launch agent, another script) configures it the same way.
+type config struct {
+	bridgePath string
+	hostPath   string
+	addr       string
+	token      string
+	fps        int
+	deviceName string
+	width      int
+	height     int
+	tls        bool
+	webDir     string
+	socketPath string
+	channel    string
+	cuid       string
+	supervise  bool
+}
+
+// executableDir returns the directory this binary was started from. os.Executable resolves
+// symlinks on macOS already; EvalSymlinks is a second pass for the cases where it does not,
+// so a symlink into dist/ still finds dist/.
+func executableDir() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = resolved
+	}
+	return filepath.Dir(executable)
+}
+
+// loadConfig reads every knob, defaulting each path to a file next to this binary:
+// scripts/build.sh puts the bridge, the host and the web assets in the same directory.
+func loadConfig() config {
+	dir := executableDir()
+	return config{
+		bridgePath: envString("CL_BRIDGE", filepath.Join(dir, "carlife-usb-bridge")),
+		hostPath:   envString("CL_HOST", filepath.Join(dir, "carlife-host")),
+		// The default is reachable from other machines on the LAN, and one viewer URL per
+		// interface is printed the way vite does. 127.0.0.1:8080 keeps the page local.
+		addr: envString("CL_ADDR", "0.0.0.0:8080"),
+		// Access token the browser client must present.
+		token: envString("CL_TOKEN", "0"),
+		// Requested frame rate; the phone may cap it and reports the rate it accepted in
+		// the log, so lower this if 60 is not accepted.
+		fps:        envInt("CL_FPS", 60),
+		deviceName: envString("CL_DEVICE_NAME", "CarLife"),
+		width:      envInt("CL_WIDTH", 1280),
+		height:     envInt("CL_HEIGHT", 720),
+		// TLS cannot be dropped for the LAN case: the playport frontend decodes with
+		// WebCodecs, which the browser only exposes in a secure context.
+		tls:        envBool("CL_TLS", true),
+		webDir:     envString("CL_WEB", filepath.Join(dir, "web")),
+		socketPath: envString("CL_SOCKET", defaultSocketPath),
+		// Vendor channel number; the phone checks it before it treats the head unit as
+		// authenticated. The default is the one the open source head unit uses for the
+		// after-market channel (CommonParams.VEHICLE_CHANNEL_AFTER_MARKET).
+		channel: envString("CL_CHANNEL", "20000000"),
+		// Head unit id. The guide requires it to be unique per head unit; the phone drops
+		// the connection when it sees a repeat.
+		cuid: envString("CL_CUID", "CarLifePort"),
+		// Start and restart the bridge and the host as child processes. Turning this off
+		// leaves carlifed as a plain HTTP/WebSocket server for a hand-started link.
+		supervise: envBool("CL_SUPERVISE", true),
+	}
+}
+
+const usageText = `usage: carlifed
+
+Configuration comes from CL_-prefixed environment variables; there are no flags. Every
+path defaults to a file next to this binary, which is where scripts/build.sh puts it.
+
+  CL_ADDR          0.0.0.0:8080            HTTP listen address
+  CL_TOKEN         0                       access token the browser client must present
+  CL_FPS           60                      frame rate requested from the phone
+  CL_TLS           true                    serve HTTPS with a self-signed certificate
+  CL_WEB           <binary dir>/web        static web asset directory
+  CL_DEVICE_NAME   CarLife                 head unit name shown in the web client
+  CL_WIDTH         1280                    requested phone video width
+  CL_HEIGHT        720                     requested phone video height
+  CL_SOCKET        /tmp/carlife-host.sock  Unix socket carlife-host listens on
+  CL_CHANNEL       20000000                vendor channel number reported to the phone
+  CL_CUID          CarLifePort             head unit id reported to the phone
+  CL_SUPERVISE     true                    start and restart carlife-usb-bridge and
+                                           carlife-host next to this binary
+  CL_BRIDGE        <binary dir>/carlife-usb-bridge   the bridge to start
+  CL_HOST          <binary dir>/carlife-host         the host to start
+
+CL_WEB, CL_BRIDGE and CL_HOST are used as given, relative paths included.
+`
+
+func main() {
+	if len(os.Args) > 1 {
+		if os.Args[1] == "-h" || os.Args[1] == "--help" {
+			fmt.Print(usageText)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "unexpected argument %q: configuration comes from CL_ environment variables, see carlifed --help\n", os.Args[1])
+		os.Exit(2)
+	}
 
 	log.SetFlags(log.Ltime)
+	cfg := loadConfig()
 
-	if _, err := os.Stat(*webDir); err != nil {
-		log.Printf("warning: %s does not exist; run ./scripts/build.sh to build the browser client", *webDir)
+	if _, err := os.Stat(cfg.webDir); err != nil {
+		log.Printf("warning: %s does not exist; run ./scripts/build.sh to build the browser client", cfg.webDir)
 	}
 
 	var sess *session
 
-	display := newDisplayState(*width, *height, fps, func(width, height, fps int) error {
+	display := newDisplayState(cfg.width, cfg.height, cfg.fps, func(width, height, fps int) error {
 		return sess.changeDisplay(width, height, fps)
 	})
-	hub := newHub(token, *deviceName, display)
-	host := newHostClient(*hostSocket)
-	sess = newSession(host, hub, *width, *height, fps)
+	hub := newHub(cfg.token, cfg.deviceName, display)
+	host := newHostClient(cfg.socketPath)
+	sess = newSession(host, hub, cfg.width, cfg.height, cfg.fps)
 	hub.session = sess
 
 	host.onEvent = sess.onHostEvent
@@ -163,23 +262,13 @@ func main() {
 		sess.broadcastState()
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	server := &http.Server{Addr: cfg.addr, Handler: hub.Routes(cfg.webDir)}
 
-	go host.run(ctx)
-	go sess.sessionWatchdog(ctx)
-
-	server := &http.Server{Addr: addr, Handler: hub.Routes(*webDir)}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-	}()
-
+	// Everything that can fail is prepared before the children exist: aborting after they
+	// are running would leave them behind, still holding the USB device.
 	scheme := "http"
 	var certFile, keyFile string
-	if *useTLS {
+	if cfg.tls {
 		var err error
 		certFile, keyFile, err = selfSignedCertificate(certificateDir())
 		if err != nil {
@@ -191,24 +280,67 @@ func main() {
 		server.ErrorLog = log.New(certificateAlertWriter{}, "", 0)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// The supervisor owns the two children, and this process must not exit before it has
+	// reaped them: exiting first orphans them, and an orphaned bridge keeps the USB device
+	// claimed. With CL_SUPERVISE=0 there are no children and the wait returns at once.
+	supervisorDone := make(chan struct{})
+	if cfg.supervise {
+		if err := checkSiblings(cfg); err != nil {
+			log.Fatal(err)
+		}
+		if err := preflight(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		go func() {
+			defer close(supervisorDone)
+			newSupervisor(cfg).run(ctx)
+		}()
+	} else {
+		close(supervisorDone)
+	}
+	waitChildren := func() { <-supervisorDone }
+
+	go host.run(ctx)
+	go sess.sessionWatchdog(ctx)
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+
 	log.Printf("CarLife head unit service started")
-	for _, entry := range viewerURLs(addr, token, scheme) {
+	for _, entry := range viewerURLs(cfg.addr, cfg.token, scheme) {
 		log.Printf("  viewer URL   %s", entry)
 	}
-	if *useTLS {
+	if cfg.tls {
 		log.Printf("  certificate  %s (self-signed: accept the browser warning once)", certFile)
 	}
-	log.Printf("  web assets   %s", *webDir)
-	log.Printf("  waiting for  %s", *hostSocket)
-
-	var err error
-	if *useTLS {
-		err = server.ListenAndServeTLS(certFile, keyFile)
+	log.Printf("  web assets   %s", cfg.webDir)
+	log.Printf("  waiting for  %s", cfg.socketPath)
+	if cfg.supervise {
+		log.Printf("  starting     %s", cfg.bridgePath)
+		log.Printf("               %s", cfg.hostPath)
 	} else {
-		err = server.ListenAndServe()
+		log.Printf("  supervising  off (CL_SUPERVISE=0): the link has to be started by hand")
 	}
-	if err != nil && err != http.ErrServerClosed {
-		log.Fatalf("HTTP server exited: %v", err)
+
+	var serveErr error
+	if cfg.tls {
+		serveErr = server.ListenAndServeTLS(certFile, keyFile)
+	} else {
+		serveErr = server.ListenAndServe()
 	}
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		stop()
+		waitChildren()
+		log.Fatalf("HTTP server exited: %v", serveErr)
+	}
+	waitChildren()
 	log.Printf("stopped")
 }

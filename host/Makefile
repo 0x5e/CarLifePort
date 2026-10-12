@@ -5,14 +5,18 @@
 
 ROOT       := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 PB         := $(ROOT)/.build/pb
-LIBDIR     := $(ROOT)/.build/lib
 CARLIFE    := $(ROOT)/vendor/carlife/CarLife-Vehicle-Lib/LibSource
+
+# Run-time artifacts go to dist/, where carlifed looks for its siblings. The library is
+# resolved relative to this binary (rpath @loader_path) instead of an absolute build path,
+# so dist/ can be copied or moved as a whole.
+DIST       := $(ROOT)/dist
 
 CXX        ?= clang++
 CXXFLAGS   += -std=gnu++11 -O2 -Wall -Wextra -I$(CARLIFE)/include -I$(PB)/include
-LDFLAGS    += -L$(LIBDIR) -lcarlifevehicle -lpthread -Wl,-rpath,$(LIBDIR)
+LDFLAGS    += -L$(DIST) -lcarlifevehicle -lpthread -Wl,-rpath,@loader_path
 
-TARGET     := carlife-host
+TARGET     := $(DIST)/carlife-host
 SOURCES    := main.cpp
 HEADERS    := protocol.h
 
@@ -21,11 +25,12 @@ HEADERS    := protocol.h
 all: $(TARGET)
 
 $(TARGET): $(SOURCES) $(HEADERS) native
+	@mkdir -p $(DIST)
 	$(CXX) $(CXXFLAGS) -o $@ $(SOURCES) $(LDFLAGS)
 	@echo "Build complete: $@"
 
-native $(LIBDIR)/libcarlifevehicle.dylib:
-	@test -f $(LIBDIR)/libcarlifevehicle.dylib || $(ROOT)/scripts/build.sh --native
+native $(DIST)/libcarlifevehicle.dylib:
+	@test -f $(DIST)/libcarlifevehicle.dylib || $(ROOT)/scripts/build.sh --native
 
 clean:
 	rm -f $(TARGET)

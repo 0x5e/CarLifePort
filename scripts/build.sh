@@ -21,6 +21,11 @@ done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Every run-time artifact lands in dist/ and nowhere else, so that carlifed can find the
+# two processes it starts and the web assets right next to itself (see server/main.go).
+# .build/ holds the intermediates (protobuf, object files) and never gets run from.
+DIST="$ROOT/dist"
+
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 
 # ------------------------------------------------------------ native library
@@ -35,7 +40,7 @@ BUILD="$ROOT/.build"
 PB_SRC="$BUILD/protobuf-2.5.0"
 PB_PREFIX="$BUILD/pb"
 LIB_SRC="$ROOT/vendor/carlife/CarLife-Vehicle-Lib/LibSource"
-LIB_OUT="$BUILD/lib"
+LIB_OUT="$DIST"
 JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
 mkdir -p "$BUILD" "$PB_PREFIX" "$LIB_OUT"
@@ -122,7 +127,11 @@ else
     )
     echo "== compiled ${#OBJECTS[@]} source files"
 
-    clang++ -dynamiclib -o "$LIB_OUT/libcarlifevehicle.dylib" "${OBJECTS[@]}" \
+    # @rpath install name + @loader_path rpath in host/Makefile: carlife-host resolves the
+    # library next to itself, so dist/ can be copied or moved as a whole. Without this the
+    # linker would record the absolute build path of the dylib.
+    clang++ -dynamiclib -install_name @rpath/libcarlifevehicle.dylib \
+        -o "$LIB_OUT/libcarlifevehicle.dylib" "${OBJECTS[@]}" \
         -L"$PB_PREFIX/lib" -lprotobuf -lpthread
     echo "== linked: $LIB_OUT/libcarlifevehicle.dylib"
     ls -lh "$LIB_OUT/libcarlifevehicle.dylib"
@@ -140,7 +149,7 @@ step "3/5 protocol stack host"
 make -C host
 
 step "4/5 Go backend"
-(cd server && go build -o carlifed .)
+(cd server && go build -o "$DIST/carlifed" .)
 
 step "5/5 web frontend (vendor/playport, built unmodified)"
 CLIENT="vendor/playport/web"
@@ -152,9 +161,13 @@ if [ ! -d "$CLIENT/node_modules" ]; then
 fi
 (cd "$CLIENT" && npm run build)
 
+# The frontend is built by vite into the submodule, which stays untouched: the result is
+# copied next to carlifed instead of building it there.
+rm -rf "$DIST/web" && cp -R "$CLIENT/dist" "$DIST/web"
+
 printf '\n\033[1;32mbuild complete\033[0m\n'
-printf '  bridge   %s\n' "tools/usb-bridge/carlife-usb-bridge"
-printf '  host     %s\n' "host/carlife-host"
-printf '  backend  %s\n' "server/carlifed"
-printf '  web      %s\n' "$CLIENT/dist"
-printf '\nrun ./scripts/run.sh to start everything\n'
+printf '  dist/bridge   %s\n' "dist/carlife-usb-bridge"
+printf '  dist/host     %s\n' "dist/carlife-host (+ libcarlifevehicle.dylib)"
+printf '  dist/backend  %s\n' "dist/carlifed"
+printf '  dist/web      %s\n' "dist/web"
+printf '\nrun dist/carlifed to start everything\n'
