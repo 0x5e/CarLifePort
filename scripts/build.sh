@@ -22,7 +22,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Every run-time artifact lands in dist/ and nowhere else, so that carlifed can find the
-# two processes it starts and the web assets right next to itself (see server/main.go).
+# process it starts and the web assets right next to itself (see server/main.go).
 # .build/ holds the intermediates (protobuf, object files) and never gets run from.
 DIST="$ROOT/dist"
 
@@ -34,7 +34,7 @@ step() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 #   2. libcarlifevehicle.dylib (CarLife head-unit protocol stack)
 # Sources and artifacts land in .build/ and are not tracked by git. Building the
 # library is idempotent: an existing dylib is kept unless --force is given.
-step "1/5 native library (protobuf 2.5.0 + libcarlifevehicle.dylib)"
+step "1/4 native library (protobuf 2.5.0 + libcarlifevehicle.dylib)"
 
 BUILD="$ROOT/.build"
 PB_SRC="$BUILD/protobuf-2.5.0"
@@ -127,7 +127,7 @@ else
     )
     echo "== compiled ${#OBJECTS[@]} source files"
 
-    # @rpath install name + @loader_path rpath in host/Makefile: carlife-host resolves the
+    # @rpath install name + @loader_path rpath in link/Makefile: carlife-link resolves the
     # library next to itself, so dist/ can be copied or moved as a whole. Without this the
     # linker would record the absolute build path of the dylib.
     clang++ -dynamiclib -install_name @rpath/libcarlifevehicle.dylib \
@@ -142,16 +142,13 @@ if [ "$NATIVE_ONLY" = 1 ]; then
 fi
 
 # ------------------------------------------------------------------- others
-step "2/5 USB bridge"
-make -C tools/usb-bridge
+step "2/4 link (USB transport + protocol stack)"
+make -C link
 
-step "3/5 protocol stack host"
-make -C host
-
-step "4/5 Go backend"
+step "3/4 Go backend"
 (cd server && go build -o "$DIST/carlifed" .)
 
-step "5/5 web frontend (vendor/playport, built unmodified)"
+step "4/4 web frontend (vendor/playport, built unmodified)"
 CLIENT="vendor/playport/web"
 if [ ! -d "$CLIENT/node_modules" ]; then
     echo "first build, installing web dependencies..."
@@ -166,8 +163,7 @@ fi
 rm -rf "$DIST/web" && cp -R "$CLIENT/dist" "$DIST/web"
 
 printf '\n\033[1;32mbuild complete\033[0m\n'
-printf '  dist/bridge   %s\n' "dist/carlife-usb-bridge"
-printf '  dist/host     %s\n' "dist/carlife-host (+ libcarlifevehicle.dylib)"
+printf '  dist/link     %s\n' "dist/carlife-link (+ libcarlifevehicle.dylib)"
 printf '  dist/backend  %s\n' "dist/carlifed"
 printf '  dist/web      %s\n' "dist/web"
 printf '\nrun dist/carlifed to start everything\n'

@@ -15,6 +15,12 @@ import (
 // middle of a long GOP can only wait; this keeps the wait finite.
 const keyframeWaitFallback = 10 * time.Second
 
+// viewerQueueDepth is the per-viewer send queue depth. It matches SEND_QUEUE_CAPACITY in
+// WebHub.kt. The queue is bounded and a viewer that cannot keep up loses the newest
+// message (see deliver), so a stalled viewer costs at most this many undelivered frames
+// and the live edge is never held back by it.
+const viewerQueueDepth = 1024
+
 // serverMessage is the JSON control message the playport web client understands.
 // Field names and semantics mirror ServerMessage in WebHub.kt.
 type serverMessage struct {
@@ -215,7 +221,7 @@ func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	v := &viewer{
 		conn:        conn,
-		send:        make(chan outbound, 512),
+		send:        make(chan outbound, viewerQueueDepth),
 		peer:        r.RemoteAddr,
 		waitedSince: time.Now(),
 	}

@@ -25,16 +25,16 @@ const (
 var levelNames = [...]string{"DEBUG", "INFO", "WARN", "ERROR"}
 
 // Log modules: one per subsystem, so a line can be traced to the file it came from
-// without reading the message. moduleBridge and moduleHost are the output of the two
-// child processes, relayed by this one.
+// without reading the message. moduleBridge and moduleStack are the two halves of the link
+// process, whose output is relayed by this one.
 const (
 	moduleSelf       = "carlifed"   // main.go: startup, shutdown, configuration
-	moduleSupervisor = "supervisor" // supervisor.go: the two child processes
-	moduleLink       = "link"       // hostclient.go: the Unix socket to carlife-host
+	moduleSupervisor = "supervisor" // supervisor.go: the link process
+	moduleLink       = "link"       // linkclient.go: the Unix socket to carlife-link
 	moduleSession    = "session"    // session.go: the CarLife session
 	moduleViewer     = "viewer"     // hub.go: browser clients and the HTTP server
-	moduleBridge     = "bridge"     // relayed output of carlife-usb-bridge
-	moduleHost       = "host"       // relayed output of carlife-host
+	moduleBridge     = "bridge"     // relayed output of the link's USB transport
+	moduleStack      = "stack"      // relayed output of the link's protocol stack
 )
 
 // moduleWidth is the module column width (the longest module name). Everything after it
@@ -48,13 +48,13 @@ var (
 
 // setLogLevel reads CL_LOG_LEVEL. An unknown value aborts instead of falling back, for
 // the same reason envInt does: silently ignoring a typo would select a level nobody
-// asked for. "verbose" is accepted as another spelling of debug.
+// asked for.
 func setLogLevel() {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv("CL_LOG_LEVEL")))
 	switch value {
 	case "":
 		return
-	case "debug", "verbose":
+	case "debug":
 		current = levelDebug
 	case "info":
 		current = levelInfo
@@ -100,18 +100,29 @@ func fatalf(module, format string, args ...any) {
 	os.Exit(1)
 }
 
-// The children stamp every line they write ("[17:01:24] ..." from the bridge,
-// "[17:01:24.123] ..." from the host), and a level marker after it where the line is not
-// info ("[17:01:24] DEBUG ..."). Both are dropped here: this process adds its own
-// timestamp and puts the level in its own column.
+// The link process stamps every line it writes ("[17:01:24] ..." from the USB transport,
+// "[17:01:24.123] ..." from the protocol stack), a level marker after it where the line is
+// not info ("[17:01:24] DEBUG ..."), and the name of the half it came from ("bridge" or
+// "stack"). All three are read back here: this process adds its own timestamp, puts the
+// level in its own column and turns the half into the module column.
 var (
 	childTimestamp = regexp.MustCompile(`^\[\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?\]\s*`)
 	childLevel     = regexp.MustCompile(`^(DEBUG|INFO|WARN|WARNING|ERROR)\s+`)
+	childModule    = regexp.MustCompile(`^(bridge|stack)\s+`)
 )
 
-// parseChildLine splits one relayed line into its level and its message. A line with no
-// marker is info, which is what all the children's one-off diagnostics are.
-func parseChildLine(line string) (logLevel, string) {
+// childModules maps the token the link writes to the module column it is logged under.
+var childModules = map[string]string{
+	"bridge": moduleBridge,
+	"stack":  moduleStack,
+}
+
+// parseChildLine splits one relayed line into its level, its module and its message. The
+// module is empty when the line carries no token, which is the case for anything the child
+// writes without going through its own logging functions; the caller falls back to the
+// module it started the child under. A line with no level marker is info, which is what all
+// the one-off diagnostics are.
+func parseChildLine(line string) (logLevel, string, string) {
 	line = strings.TrimRight(line, "\r\n")
 	line = childTimestamp.ReplaceAllString(line, "")
 	level := levelInfo
@@ -119,7 +130,12 @@ func parseChildLine(line string) (logLevel, string) {
 		level = levelFromName(match[1])
 		line = line[len(match[0]):]
 	}
-	return level, line
+	module := ""
+	if match := childModule.FindStringSubmatch(line); match != nil {
+		module = childModules[match[1]]
+		line = line[len(match[0]):]
+	}
+	return level, module, line
 }
 
 // levelFromName maps a marker to a level. Every name the regexp accepts is known here.

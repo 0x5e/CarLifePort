@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Kept in sync with host/protocol.h.
+// Kept in sync with link/protocol.h.
 const (
 	chCmd   byte = 1
 	chVideo byte = 2
@@ -20,7 +20,7 @@ const (
 	chCtrl  byte = 6
 )
 
-// Upstream events (carlife-host -> this process)
+// Upstream events (carlife-link -> this process)
 const (
 	evStatus               byte = 1
 	evProtocolMatch        byte = 2
@@ -52,7 +52,7 @@ const (
 	evAudioSeek   byte = 6
 )
 
-// Downstream commands (this process -> carlife-host)
+// Downstream commands (this process -> carlife-link)
 const (
 	cmdProtocolVersion   byte = 1
 	cmdVideoEncoderInit  byte = 2
@@ -91,41 +91,41 @@ const (
 	reconnectInterval = 2 * time.Second
 )
 
-// hostEvent is an event with the frame header already stripped; payload has the tag byte removed.
-type hostEvent struct {
+// linkEvent is an event with the frame header already stripped; payload has the tag byte removed.
+type linkEvent struct {
 	channel byte
 	tag     byte
 	payload []byte
 }
 
-// hostClient maintains the Unix socket connection to carlife-host and reconnects automatically after a drop.
-type hostClient struct {
+// linkClient maintains the Unix socket connection to carlife-link and reconnects automatically after a drop.
+type linkClient struct {
 	path string
 
 	writeMu sync.Mutex
 	conn    net.Conn
 
-	onEvent func(hostEvent)
+	onEvent func(linkEvent)
 	onState func(connected bool)
 }
 
-func newHostClient(path string) *hostClient {
-	return &hostClient{path: path}
+func newLinkClient(path string) *linkClient {
+	return &linkClient{path: path}
 }
 
 // run blocks until ctx is done.
-func (h *hostClient) run(ctx context.Context) {
+func (h *linkClient) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		conn, err := net.Dial("unix", h.path)
 		if err != nil {
-			infof(moduleLink, "waiting for carlife-host (%v), retrying in %s", err, reconnectInterval)
+			infof(moduleLink, "waiting for carlife-link (%v), retrying in %s", err, reconnectInterval)
 			if !sleepContext(ctx, reconnectInterval) {
 				return
 			}
 			continue
 		}
 
-		infof(moduleLink, "connected to carlife-host: %s", h.path)
+		infof(moduleLink, "connected to carlife-link: %s", h.path)
 		h.writeMu.Lock()
 		h.conn = conn
 		h.writeMu.Unlock()
@@ -141,14 +141,14 @@ func (h *hostClient) run(ctx context.Context) {
 		}
 		h.writeMu.Unlock()
 		conn.Close()
-		infof(moduleLink, "disconnected from carlife-host, reconnecting")
+		infof(moduleLink, "disconnected from carlife-link, reconnecting")
 		if h.onState != nil {
 			h.onState(false)
 		}
 	}
 }
 
-func (h *hostClient) readLoop(conn net.Conn) {
+func (h *linkClient) readLoop(conn net.Conn) {
 	header := make([]byte, frameHeaderSize)
 	for {
 		if _, err := io.ReadFull(conn, header); err != nil {
@@ -157,7 +157,7 @@ func (h *hostClient) readLoop(conn net.Conn) {
 		channel := header[0]
 		length := binary.BigEndian.Uint32(header[1:])
 		if length == 0 || length > maxFramePayload {
-			warnf(moduleLink, "carLife-host sent an invalid frame: channel=%d length=%d", channel, length)
+			warnf(moduleLink, "carlife-link sent an invalid frame: channel=%d length=%d", channel, length)
 			return
 		}
 		payload := make([]byte, length)
@@ -165,17 +165,17 @@ func (h *hostClient) readLoop(conn net.Conn) {
 			return
 		}
 		if h.onEvent != nil {
-			h.onEvent(hostEvent{channel: channel, tag: payload[0], payload: payload[1:]})
+			h.onEvent(linkEvent{channel: channel, tag: payload[0], payload: payload[1:]})
 		}
 	}
 }
 
-// send writes one command to carlife-host. It returns an error when the connection is unavailable; the caller decides whether to ignore it.
-func (h *hostClient) send(channel, tag byte, payload []byte) error {
+// send writes one command to carlife-link. It returns an error when the connection is unavailable; the caller decides whether to ignore it.
+func (h *linkClient) send(channel, tag byte, payload []byte) error {
 	h.writeMu.Lock()
 	defer h.writeMu.Unlock()
 	if h.conn == nil {
-		return fmt.Errorf("carlife-host not connected")
+		return fmt.Errorf("carlife-link not connected")
 	}
 	frame := make([]byte, frameHeaderSize+1+len(payload))
 	frame[0] = channel
@@ -196,35 +196,35 @@ func be32(value int32) []byte {
 	return buffer
 }
 
-func (h *hostClient) sendProtocolVersion(major, minor int32) error {
+func (h *linkClient) sendProtocolVersion(major, minor int32) error {
 	return h.send(chCmd, cmdProtocolVersion, append(be32(major), be32(minor)...))
 }
 
-func (h *hostClient) sendVideoEncoderInit(width, height, fps int32) error {
+func (h *linkClient) sendVideoEncoderInit(width, height, fps int32) error {
 	payload := append(be32(width), be32(height)...)
 	return h.send(chCmd, cmdVideoEncoderInit, append(payload, be32(fps)...))
 }
 
-func (h *hostClient) sendVideoEncoderStart() error {
+func (h *linkClient) sendVideoEncoderStart() error {
 	return h.send(chCmd, cmdVideoEncoderStart, nil)
 }
 
-func (h *hostClient) sendGoToForeground() error {
+func (h *linkClient) sendGoToForeground() error {
 	return h.send(chCmd, cmdGoToForeground, nil)
 }
 
-// sendAuthenRequest starts the head unit authentication exchange. The host ignores it
-// once the phone has confirmed authentication.
-func (h *hostClient) sendAuthenRequest() error {
+// sendAuthenRequest starts the head unit authentication exchange. carlife-link ignores
+// it once the phone has confirmed authentication.
+func (h *linkClient) sendAuthenRequest() error {
 	return h.send(chCmd, cmdAuthenRequest, nil)
 }
 
-func (h *hostClient) sendTouch(action, x, y int32) error {
+func (h *linkClient) sendTouch(action, x, y int32) error {
 	payload := append(be32(action), be32(x)...)
 	return h.send(chCtrl, cmdTouchAction, append(payload, be32(y)...))
 }
 
-func (h *hostClient) sendHardKey(keycode uint32) error {
+func (h *linkClient) sendHardKey(keycode uint32) error {
 	return h.send(chCtrl, cmdHardKey, be32(int32(keycode)))
 }
 

@@ -1,5 +1,5 @@
 /*
- * bridge.c — CarLife head-unit USB(AOA) <-> local TCP channel bridge
+ * bridge.c — the USB half of the link process
  *
  * Structure: phone <-USB(AOA)-> this process <-TCP(127.0.0.1)-> CarLifeVehicleLib
  *
@@ -24,16 +24,18 @@
  * See packageHeadAnalysis() / setPackageHeadDataSize() / setPackageHeadType() in
  * CarLife-Vehicle-Lib/LibSource/core/CTranRecvPackageProcess.cpp.
  *
- * Usage: start this process first (completes the AOA handshake and begins listening), then
- * start the head-unit program linked against libcarlifevehicle.
+ * This is the USB half of carlife-link; main.cpp is the protocol stack half. The two used
+ * to be separate processes started in order (transport first, so its ports exist before the
+ * library connects). They are one process now, and that order is bridge_start() followed by
+ * the library setup in main().
  *
- * Device lifetime: the phone may be plugged in before or after this process starts, so
- * step 1 waits for a device instead of giving up. The process still exits once a link is
- * lost (USB read error); the supervisor is expected to restart the bridge and the head-unit
- * program together, because neither CarLifeVehicleLib nor the phone side can resume a
- * session that was interrupted by a re-plug.
+ * Device lifetime: the phone may be plugged in before or after the process starts, so
+ * bridge_start() waits for a device instead of giving up. The process still exits once a
+ * link is lost (USB read error); carlifed restarts it, because neither CarLifeVehicleLib
+ * nor the phone side can resume a session that was interrupted by a re-plug.
  */
 #include "aoa.h"
+#include "bridge.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -547,54 +549,6 @@ static void on_signal(int sig)
     aoa_stop = 1;
 }
 
-static void usage(const char *argv0)
-{
-    printf("usage: %s [options]\n", argv0);
-    printf("  --list                 list USB devices only, do not touch any device\n");
-    printf("  --force-handshake      resend 51/52/53 even if already in accessory mode\n");
-    printf("  --vid <0xXXXX>         target device VID\n");
-    printf("  --pid <0xXXXX>         target device PID\n");
-    printf("  --host <address>       local listen address, default %s\n", DEFAULT_HOST);
-    printf("  --quiet                suppress periodic statistics\n");
-    printf("  -h, --help             show this help\n");
-}
-
-static int parse_args(int argc, char **argv, int *vid, int *pid, const char **host,
-                      int *force_handshake, int *list_only)
-{
-    int i;
-
-    *vid = -1;
-    *pid = -1;
-    *host = DEFAULT_HOST;
-    *force_handshake = 0;
-    *list_only = 0;
-
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--list") == 0) {
-            *list_only = 1;
-        } else if (strcmp(argv[i], "--force-handshake") == 0) {
-            *force_handshake = 1;
-        } else if (strcmp(argv[i], "--quiet") == 0) {
-            g_quiet = 1;
-        } else if (strcmp(argv[i], "--vid") == 0 && i + 1 < argc) {
-            *vid = (int)strtol(argv[++i], NULL, 0);
-        } else if (strcmp(argv[i], "--pid") == 0 && i + 1 < argc) {
-            *pid = (int)strtol(argv[++i], NULL, 0);
-        } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
-            *host = argv[++i];
-        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            usage(argv[0]);
-            exit(0);
-        } else {
-            aoa_log("unknown argument: %s", argv[i]);
-            usage(argv[0]);
-            return -1;
-        }
-    }
-    return 0;
-}
-
 /* Acquire a claimed accessory device: pick a device, send 51/52/53 unless it is already in
  * accessory mode, wait for the accessory re-enumeration, then claim the bulk interface.
  *
@@ -671,53 +625,61 @@ static int acquire_device(int vid, int pid, int force_handshake, struct aoa_devi
     }
 }
 
-int main(int argc, char **argv)
-{
-    int vid, pid, force_handshake, list_only;
-    const char *host;
-    int rc;
-    pthread_t tid;
-    int i;
+/* ------------------------------------------------------------------ public API */
 
-    if (parse_args(argc, argv, &vid, &pid, &host, &force_handshake, &list_only) != 0) {
-        return 2;
-    }
-    signal(SIGINT, on_signal);
-    signal(SIGTERM, on_signal);
-    signal(SIGPIPE, SIG_IGN);
+/* Name and local port of each channel; the ports are CarLifeVehicleLib's
+ * CMD/VIDEO/MEDIA/TTS/VR/TOUCH_SOCKET_PORT_HU values. */
+static void init_channels(void)
+{
+    int i;
+    static const struct {
+        const char *name;
+        unsigned short port;
+    } kChannel[AOA_CHANNEL_COUNT] = {
+        {"cmd", 7200}, {"video", 8200}, {"audio", 9200},
+        {"tts", 9201}, {"vr", 9202},    {"touch", 9300},
+    };
 
     for (i = 1; i <= AOA_CHANNEL_COUNT; i++) {
         g_ch[i].id = (unsigned int)i;
         g_ch[i].listen_fd = -1;
         g_ch[i].client_fd = -1;
+        g_ch[i].name = kChannel[i - 1].name;
+        g_ch[i].port = kChannel[i - 1].port;
         pthread_mutex_init(&g_ch[i].lock, NULL);
     }
-    g_ch[1].name = "cmd";
-    g_ch[1].port = 7200;
-    g_ch[2].name = "video";
-    g_ch[2].port = 8200;
-    g_ch[3].name = "audio";
-    g_ch[3].port = 9200;
-    g_ch[4].name = "tts";
-    g_ch[4].port = 9201;
-    g_ch[5].name = "vr";
-    g_ch[5].port = 9202;
-    g_ch[6].name = "touch";
-    g_ch[6].port = 9300;
+}
+
+int bridge_list_devices(void)
+{
+    if (aoa_init() != 0) {
+        return 1;
+    }
+    aoa_log("USB device list:");
+    aoa_list_devices();
+    aoa_fini();
+    return 0;
+}
+
+int bridge_start(const char *host, int vid, int pid, int force_handshake, int quiet)
+{
+    pthread_t tid;
+
+    g_quiet = quiet;
+    init_channels();
+
+    /* The stop flag the transport loop watches is the process's only "stop" signal, so
+     * the handlers are installed here rather than in main(). */
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+    signal(SIGPIPE, SIG_IGN);
 
     if (aoa_init() != 0) {
         return 1;
     }
-    if (list_only) {
-        aoa_log("USB device list:");
-        aoa_list_devices();
-        aoa_fini();
-        return 0;
-    }
 
     aoa_log("== 1. waiting for a phone ==");
-    rc = acquire_device(vid, pid, force_handshake, &g_dev);
-    if (rc != 0) {
+    if (acquire_device(vid, pid, force_handshake, &g_dev) != 0) {
         aoa_fini();
         return 1;
     }
@@ -739,19 +701,27 @@ int main(int argc, char **argv)
     }
     pthread_detach(tid);
 
-    aoa_log("== 3. bridge ready, you can start the head-unit program ==");
-    rc = usb_rx_loop();
+    aoa_log("== 3. USB link ready ==");
+    return 0;
+}
+
+int bridge_loop(void)
+{
+    int rc = usb_rx_loop();
 
     if (rc != 0) {
         aoa_log("USB receive loop ended (error)");
     } else {
         aoa_log("USB receive loop ended (clean exit)");
     }
+    return rc;
+}
 
+void bridge_shutdown(void)
+{
     aoa_stop = 1;
     shutdown_listeners();
     wait_threads(3000);
     aoa_close(&g_dev);
     aoa_fini();
-    return rc == 0 ? 0 : 1;
 }

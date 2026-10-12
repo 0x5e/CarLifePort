@@ -1,25 +1,24 @@
 /*
- * carlife-host -- host process for the CarLife head-unit-side protocol stack.
+ * carlife-link -- the phone link: USB transport plus CarLife head-unit protocol stack.
  *
- * Upstream are the six TCP channels that tools/usb-bridge opens on 127.0.0.1;
- * this process exchanges CarLife protocol messages with the phone through
- * libcarlifevehicle. Downstream it writes the data of the six channels to an
- * AF_UNIX socket as length-prefixed frames for the Go backend to consume, and
- * receives commands from the same socket to forward back to the phone.
+ * Upstream is the phone over USB(AOA): bridge.c owns that side and turns the single USB
+ * bulk channel into the six TCP channels CarLifeVehicleLib connects to on 127.0.0.1.
+ * Downstream is the Go backend: the data of those six channels is written to an AF_UNIX
+ * socket as length-prefixed frames, and the commands received on the same socket are
+ * forwarded back to the phone.
  *
- * Process model: the main thread handles accept and command reads; one receive
- * thread each for cmd/video/audio/tts/vr runs the library's blocking
- * xxxReceiveOperation().
+ * Process model: bridge_start() claims the phone and opens the six local ports, this file
+ * then brings up the library, one receive thread each for cmd/video/audio/tts/vr/ctrl, and
+ * a thread that serves the Go backend. The main thread runs the USB receive loop.
  */
 #include "CCarLifeLibWrapper.h"
 #include "CConnectManager.h"
+#include "bridge.h"
 #include "protocol.h"
 
 #include <errno.h>
 #include <fcntl.h>
-#include <netinet/in.h>
 #include <pthread.h>
-#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -62,7 +61,8 @@ static std::string g_cuid = "CarLifePort";
 
 /* Shared body of log_line and log_line_debug. A level marker is written right after the
  * timestamp, which is where the Go backend looks for it when it relays these lines: a
- * marked line is dropped unless the backend runs at debug level. */
+ * marked line is dropped unless the backend runs at debug level. The subsystem token after
+ * it names this half of the link, which the backend turns back into a module name. */
 static void log_vline(const char* level, const char* fmt, va_list args)
 {
     if (g_quiet) {
@@ -79,6 +79,7 @@ static void log_vline(const char* level, const char* fmt, va_list args)
     if (level != NULL) {
         fprintf(stderr, "%s ", level);
     }
+    fputs("stack ", stderr);
     vfprintf(stderr, fmt, args);
     fputc('\n', stderr);
     fflush(stderr);
@@ -214,38 +215,6 @@ static void broadcast_status(void)
     status[0] = (g_connection_result == 0) ? 1 : 0;
     put_be32(status + 1, (uint32_t)g_connection_result);
     send_frame(CH_CMD, EV_STATUS, status, sizeof(status));
-}
-
-/* Wait for usb-bridge to start listening on the command channel port. The
- * probe connection is closed immediately; the bridge accepts again and the
- * real channel is not occupied.
- * timeout_seconds <= 0 waits forever: the bridge now waits for the phone to be
- * plugged in, so a fixed timeout would make this process give up while the
- * phone is still being plugged in. */
-static int wait_for_bridge(int port, int timeout_seconds)
-{
-    for (int elapsed = 0;; ++elapsed) {
-        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (fd >= 0) {
-            struct sockaddr_in address;
-            memset(&address, 0, sizeof(address));
-            address.sin_family = AF_INET;
-            address.sin_port = htons((uint16_t)port);
-            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            int ready = (::connect(fd, (struct sockaddr*)&address, sizeof(address)) == 0);
-            ::close(fd);
-            if (ready) {
-                return 1;
-            }
-        }
-        if (timeout_seconds > 0 && elapsed >= timeout_seconds) {
-            return 0;
-        }
-        if (elapsed % 5 == 0) {
-            log_line("waiting for usb-bridge to become ready on 127.0.0.1:%d...", port);
-        }
-        sleep(1);
-    }
 }
 
 /* --------------------------------------------- Command channel callbacks (phone -> head unit) */
@@ -1022,6 +991,45 @@ static void serve_client(int fd)
     }
 }
 
+/* Serve the Go backend. This runs on its own thread: the main thread owns the USB receive
+ * loop, and one backend connection at a time is all carlifed makes. */
+static void* backend_loop(void*)
+{
+    for (;;) {
+        struct sockaddr_un peer;
+        socklen_t peer_length = sizeof(peer);
+        int fd = ::accept(g_listen_fd, (struct sockaddr*)&peer, &peer_length);
+        if (fd < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            log_line("accept failed: %s", strerror(errno));
+            return NULL;
+        }
+        set_close_on_exec(fd);
+
+        pthread_mutex_lock(&g_send_lock);
+        if (g_client_fd >= 0) {
+            ::close(g_client_fd);
+        }
+        g_client_fd = fd;
+        pthread_mutex_unlock(&g_send_lock);
+        log_line("Go backend connected");
+
+        broadcast_status();
+
+        serve_client(fd);
+
+        pthread_mutex_lock(&g_send_lock);
+        if (g_client_fd == fd) {
+            g_client_fd = -1;
+        }
+        pthread_mutex_unlock(&g_send_lock);
+        ::close(fd);
+        log_line("Go backend disconnected, waiting for reconnect");
+    }
+}
+
 static int listen_unix(const char* path)
 {
     ::unlink(path);
@@ -1058,7 +1066,7 @@ static void start_thread(void* (*entry)(void*), const char* name)
     pthread_detach(thread);
 }
 
-/* Open the six channel sockets towards the local ports that tools/usb-bridge listens on.
+/* Open the six channel sockets towards the local ports bridge.c listens on.
  *
  * This is what CCarLifeLib::connectionSetup() does minus its first step, which runs six
  * `adb forward` commands. Skipping that step is deliberate:
@@ -1100,20 +1108,31 @@ static void usage(const char* program)
     fprintf(stderr,
             "Usage: %s [options]\n"
             "\n"
-            "  --socket <path>   Unix socket path (default %s)\n"
-            "  --channel <name>  vendor channel number reported to the phone (default 20000000)\n"
-            "  --cuid <id>       head unit id reported to the phone (default CarLifePort)\n"
-            "  -q, --quiet       do not print this process's runtime logs\n"
-            "  -v, --verbose     also emit the protocol stack's internal logs (discarded by default)\n"
-            "  -h, --help        show this help\n"
-            "\n"
-            "Startup order: tools/usb-bridge first, then this process, then server/carlifed.\n",
+            "  --socket <path>    Unix socket the Go backend connects to (default %s)\n"
+            "  --channel <name>   vendor channel number reported to the phone (default 20000000)\n"
+            "  --cuid <id>        head unit id reported to the phone (default CarLifePort)\n"
+            "  --host <address>   local address of the six channel ports (default 127.0.0.1)\n"
+            "  --vid <0xXXXX>     target device VID (default: pick a phone)\n"
+            "  --pid <0xXXXX>     target device PID (default: pick a phone)\n"
+            "  --force-handshake  resend 51/52/53 even if the phone is already in accessory mode\n"
+            "  --list             list the USB devices and exit, without touching any device\n"
+            "  --usb-only         run the USB transport without the protocol stack\n"
+            "  -q, --quiet        do not print this process's runtime logs\n"
+            "  -v, --verbose      also emit the protocol stack's internal logs (discarded by default)\n"
+            "  -h, --help         show this help\n",
             program, CL_DEFAULT_SOCKET);
 }
 
 int main(int argc, char** argv)
 {
     const char* socket_path = CL_DEFAULT_SOCKET;
+    const char* channel_host = "127.0.0.1";
+    int vid = -1;
+    int pid = -1;
+    int force_handshake = 0;
+    int list_only = 0;
+    int usb_only = 0;
+
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             socket_path = argv[++i];
@@ -1121,6 +1140,18 @@ int main(int argc, char** argv)
             g_channel = argv[++i];
         } else if (strcmp(argv[i], "--cuid") == 0 && i + 1 < argc) {
             g_cuid = argv[++i];
+        } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
+            channel_host = argv[++i];
+        } else if (strcmp(argv[i], "--vid") == 0 && i + 1 < argc) {
+            vid = (int)strtol(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--pid") == 0 && i + 1 < argc) {
+            pid = (int)strtol(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--force-handshake") == 0) {
+            force_handshake = 1;
+        } else if (strcmp(argv[i], "--list") == 0) {
+            list_only = 1;
+        } else if (strcmp(argv[i], "--usb-only") == 0) {
+            usb_only = 1;
         } else if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
             g_quiet = 1;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -1138,31 +1169,36 @@ int main(int argc, char** argv)
     /* The protocol stack logs one line per message, video frames included,
      * which floods the terminal in normal operation; unless explicitly
      * requested, discard it entirely and keep only this process's diagnostics
-     * (on stderr). */
+     * (on stderr, which is also where the transport writes). */
     if (!g_verbose) {
         freopen("/dev/null", "w", stdout);
     }
 
-    /* Do not get killed by SIGPIPE when the peer disconnects first */
-    signal(SIGPIPE, SIG_IGN);
-
     /* Seed the random value of the authentication request */
     srand((unsigned int)time(NULL) ^ (unsigned int)getpid());
 
+    if (list_only) {
+        return bridge_list_devices();
+    }
+
+    /* The transport half comes first: its six ports have to exist before the library
+     * connects, and it waits here until a phone is plugged in. bridge_start() also
+     * installs the SIGINT/SIGTERM handler that stops both halves. */
+    if (bridge_start(channel_host, vid, pid, force_handshake, g_quiet) != 0) {
+        return 1;
+    }
+    if (usb_only) {
+        int rc = bridge_loop();
+        bridge_shutdown();
+        return rc == 0 ? 0 : 1;
+    }
+
     g_listen_fd = listen_unix(socket_path);
     if (g_listen_fd < 0) {
+        bridge_shutdown();
         return 1;
     }
     log_line("listening on %s", socket_path);
-
-    /* The bridge opens its listeners only once a phone is attached, so wait without a
-     * deadline: the phone may be plugged in after this process has started. */
-    if (!wait_for_bridge(CL_BRIDGE_PORT, 0)) {
-        log_line("timed out waiting for usb-bridge (127.0.0.1:%d). Start tools/usb-bridge before running this process.",
-                 CL_BRIDGE_PORT);
-        return 1;
-    }
-    log_line("usb-bridge is ready");
 
     CCarLifeLib* lib = CCarLifeLib::getInstance();
     lib->carLifeLibInit();
@@ -1176,7 +1212,10 @@ int main(int argc, char** argv)
         sleep(1);
     }
     if (g_connection_result != 0) {
-        log_line("failed to establish channels, exiting. Make sure usb-bridge is running.");
+        log_line("failed to establish the six channels, exiting");
+        ::close(g_listen_fd);
+        ::unlink(socket_path);
+        bridge_shutdown();
         return 1;
     }
     log_line("all six channels connected (127.0.0.1 local ports)");
@@ -1187,44 +1226,16 @@ int main(int argc, char** argv)
     start_thread(tts_receive_thread, "TTS channel");
     start_thread(vr_receive_thread, "voice channel");
     start_thread(ctrl_receive_thread, "control channel");
+    start_thread(backend_loop, "backend");
 
     log_line("ready, waiting for the Go backend to connect");
 
-    for (;;) {
-        struct sockaddr_un peer;
-        socklen_t peer_length = sizeof(peer);
-        int fd = ::accept(g_listen_fd, (struct sockaddr*)&peer, &peer_length);
-        if (fd < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            log_line("accept failed: %s", strerror(errno));
-            break;
-        }
-        set_close_on_exec(fd);
+    /* The USB receive loop owns the main thread: it returns when the phone goes away, and
+     * the process ends there so that carlifed rebuilds the link. */
+    int rc = bridge_loop();
 
-        pthread_mutex_lock(&g_send_lock);
-        if (g_client_fd >= 0) {
-            ::close(g_client_fd);
-        }
-        g_client_fd = fd;
-        pthread_mutex_unlock(&g_send_lock);
-        log_line("Go backend connected");
-
-        broadcast_status();
-
-        serve_client(fd);
-
-        pthread_mutex_lock(&g_send_lock);
-        if (g_client_fd == fd) {
-            g_client_fd = -1;
-        }
-        pthread_mutex_unlock(&g_send_lock);
-        ::close(fd);
-        log_line("Go backend disconnected, waiting for reconnect");
-    }
-
+    bridge_shutdown();
     ::close(g_listen_fd);
     ::unlink(socket_path);
-    return 0;
+    return rc == 0 ? 0 : 1;
 }

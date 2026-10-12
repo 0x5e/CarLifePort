@@ -53,12 +53,12 @@ type knobState struct {
 
 // session tracks CarLife session state: handshake progression, audio/video forwarding, and dispatch of browser commands.
 type session struct {
-	host *hostClient
+	link *linkClient
 	hub  *Hub
 
 	mu sync.Mutex
 
-	hostReady   bool
+	linkReady   bool
 	deviceName  string
 	deviceModel string
 
@@ -115,9 +115,9 @@ type session struct {
 	lastProgress time.Time
 }
 
-func newSession(host *hostClient, hub *Hub, width, height, fps int) *session {
+func newSession(link *linkClient, hub *Hub, width, height, fps int) *session {
 	return &session{
-		host:            host,
+		link:            link,
 		hub:             hub,
 		requestedWidth:  width,
 		requestedHeight: height,
@@ -130,9 +130,9 @@ func newSession(host *hostClient, hub *Hub, width, height, fps int) *session {
 	}
 }
 
-// resetStream drops the per-session progress state. Called whenever carlife-host
-// (re)connects, because a reconnect means the previous CarLife session is over: the
-// head-unit process was restarted, which only happens after the phone was (re)plugged.
+// resetStream drops the per-session progress state. Called whenever carlife-link
+// (re)connects, because a reconnect means the previous CarLife session is over: the link
+// process was restarted, which only happens after the phone was (re)plugged.
 //
 // The encoder configuration (sps / pps / avcC / width / height) is deliberately kept. A
 // link drop does not necessarily produce a new one: the phone keeps encoding across the
@@ -170,7 +170,7 @@ func (s *session) sessionWatchdog(ctx context.Context) {
 		}
 		s.mu.Lock()
 		idle := time.Since(s.lastProgress)
-		stalled := s.hostReady && !s.streaming && idle >= watchdogIdleTimeout
+		stalled := s.linkReady && !s.streaming && idle >= watchdogIdleTimeout
 		if stalled {
 			// Space the retries out instead of firing on every tick.
 			s.lastProgress = time.Now()
@@ -178,7 +178,7 @@ func (s *session) sessionWatchdog(ctx context.Context) {
 		// Disabled for now: asking the phone to authenticate made it report an
 		// unauthenticated head unit right away, which is worse than never asking. See
 		// requestAuthentication().
-		// retryAuthen := s.hostReady && !s.authenDone && time.Since(s.lastAuthenTry) >= authenRetryInterval
+		// retryAuthen := s.linkReady && !s.authenDone && time.Since(s.lastAuthenTry) >= authenRetryInterval
 		s.mu.Unlock()
 		if stalled {
 			infof(moduleSession, "no CarLife session yet (idle %s), resending protocol version", idle.Truncate(time.Second))
@@ -192,7 +192,7 @@ func (s *session) sessionWatchdog(ctx context.Context) {
 }
 
 // requestAuthentication starts the head unit authentication exchange. Repeating it is
-// harmless: the host skips the request once the phone has confirmed.
+// harmless: carlife-link skips the request once the phone has confirmed.
 //
 // Not called at the moment. Asking the phone to authenticate made it report an
 // unauthenticated head unit as soon as CarLife started, even though the head unit
@@ -203,7 +203,7 @@ func (s *session) requestAuthentication() {
 	s.mu.Lock()
 	s.lastAuthenTry = time.Now()
 	s.mu.Unlock()
-	if err := s.host.sendAuthenRequest(); err != nil {
+	if err := s.link.sendAuthenRequest(); err != nil {
 		errorf(moduleSession, "failed to start head unit authentication: %v", err)
 		return
 	}
@@ -232,9 +232,9 @@ func (s *session) reportFrameRate() {
 		float64(frames)/elapsed.Seconds(), frames, float64(total)/1024/elapsed.Seconds(), elapsed.Truncate(time.Second), requested)
 }
 
-/* ------------------------------------------------------------ carlife-host events */
+/* ------------------------------------------------------------ carlife-link events */
 
-func (s *session) onHostEvent(event hostEvent) {
+func (s *session) onLinkEvent(event linkEvent) {
 	s.mu.Lock()
 	s.lastProgress = time.Now()
 	s.mu.Unlock()
@@ -254,7 +254,7 @@ func (s *session) onHostEvent(event hostEvent) {
 	}
 }
 
-func (s *session) onCommandEvent(event hostEvent) {
+func (s *session) onCommandEvent(event linkEvent) {
 	switch event.tag {
 	case evStatus:
 		connected := len(event.payload) >= 1 && event.payload[0] == 1
@@ -263,13 +263,13 @@ func (s *session) onCommandEvent(event hostEvent) {
 			result = int32(binary.BigEndian.Uint32(event.payload[1:]))
 		}
 		s.mu.Lock()
-		s.hostReady = connected
+		s.linkReady = connected
 		s.mu.Unlock()
 		if connected {
 			infof(moduleSession, "head unit channel ready, starting CarLife handshake")
 			s.startHandshake()
 		} else {
-			warnf(moduleSession, "head unit channel unavailable (connectionSetup returned %d); make sure usb-bridge is running, then restart carlife-host", result)
+			warnf(moduleSession, "head unit channel unavailable (the link reported %d), it will be rebuilt", result)
 		}
 		s.broadcastState()
 
@@ -296,7 +296,7 @@ func (s *session) onCommandEvent(event hostEvent) {
 		if fps > 0 && fps < requestedFPS {
 			infof(moduleSession, "phone limited the frame rate to %d fps (requested %d)", fps, requestedFPS)
 		}
-		if err := s.host.sendVideoEncoderStart(); err != nil {
+		if err := s.link.sendVideoEncoderStart(); err != nil {
 			errorf(moduleSession, "failed to start video encoder: %v", err)
 		}
 		s.broadcastState()
@@ -360,7 +360,7 @@ func (s *session) onCommandEvent(event hostEvent) {
 		infof(moduleSession, "phone module status: %s", describeModuleStatus(event.payload))
 
 	case evLog:
-		debugf(moduleSession, "carlife-host: %s", string(event.payload))
+		debugf(moduleSession, "carlife-link: %s", string(event.payload))
 	}
 }
 
@@ -463,7 +463,7 @@ func textField(info map[string]any, key string) string {
 }
 
 func (s *session) startHandshake() {
-	if err := s.host.sendProtocolVersion(1, 0); err != nil {
+	if err := s.link.sendProtocolVersion(1, 0); err != nil {
 		errorf(moduleSession, "failed to send protocol version: %v", err)
 	}
 }
@@ -473,7 +473,7 @@ func (s *session) requestVideo() {
 	width, height, fps := s.requestedWidth, s.requestedHeight, s.requestedFPS
 	s.mu.Unlock()
 	infof(moduleSession, "requesting phone to encode video at %dx%d@%d", width, height, fps)
-	if err := s.host.sendVideoEncoderInit(int32(width), int32(height), int32(fps)); err != nil {
+	if err := s.link.sendVideoEncoderInit(int32(width), int32(height), int32(fps)); err != nil {
 		errorf(moduleSession, "failed to request video encoding: %v", err)
 	}
 }
@@ -541,7 +541,7 @@ func (s *session) onVideoData(data []byte) {
 
 /* ---------------------------------------------------------------------- audio */
 
-func (s *session) onAudioEvent(streamType byte, name string, event hostEvent) {
+func (s *session) onAudioEvent(streamType byte, name string, event linkEvent) {
 	switch event.tag {
 	case evAudioInit:
 		if len(event.payload) < 12 {
@@ -689,7 +689,7 @@ func (s *session) handleTouch(contacts []touchContact) {
 		// sending one with down clear, so the release repeats the last one. Naming the origin
 		// here reads as the finger jumping to the top left corner, and the phone cancels a
 		// press that leaves the control before it lifts instead of completing it.
-		if err := s.host.sendTouch(motionUp, lastX, lastY); err != nil {
+		if err := s.link.sendTouch(motionUp, lastX, lastY); err != nil {
 			errorf(moduleSession, "failed to send touch release: %v", err)
 		}
 		return
@@ -722,7 +722,7 @@ func (s *session) handleTouch(contacts []touchContact) {
 	s.touchY = y
 	s.mu.Unlock()
 
-	if err := s.host.sendTouch(action, x, y); err != nil {
+	if err := s.link.sendTouch(action, x, y); err != nil {
 		errorf(moduleSession, "failed to send touch: %v", err)
 	}
 }
@@ -814,7 +814,7 @@ func (s *session) handleSiri() {
 }
 
 func (s *session) sendHardKey(code uint32) {
-	if err := s.host.sendHardKey(code); err != nil {
+	if err := s.link.sendHardKey(code); err != nil {
 		errorf(moduleSession, "failed to send hard key 0x%02X: %v", code, err)
 	}
 }
@@ -834,13 +834,13 @@ func (s *session) changeDisplay(width, height, fps int) error {
 	infof(moduleSession, "switching video mode to %dx%d@%d", width, height, fps)
 	// Reset the encoder first, then renegotiate with the new mode; otherwise the phone
 	// will not start producing frames again.
-	_ = s.host.send(chCmd, cmdVideoEncoderReset, nil)
+	_ = s.link.send(chCmd, cmdVideoEncoderReset, nil)
 	s.mu.Lock()
 	s.streaming = false
 	s.avcC = nil
 	s.mu.Unlock()
-	if err := s.host.sendVideoEncoderInit(int32(width), int32(height), int32(fps)); err != nil {
-		return fmt.Errorf("carlife-host is not connected")
+	if err := s.link.sendVideoEncoderInit(int32(width), int32(height), int32(fps)); err != nil {
+		return fmt.Errorf("carlife-link is not connected")
 	}
 	return nil
 }

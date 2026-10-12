@@ -11,21 +11,27 @@ CarLife 协议栈使用百度的开源车机库 [CarLifeVehicleLib](./vendor/car
 ## 架构
 
 ```
-手机 ──USB(AOA)──► carlife-usb-bridge ──TCP(127.0.0.1)──► carlife-host ──Unix socket──► carlifed ──WebSocket──► 浏览器
-      CarLife 协议      tools/usb-bridge      7200/8200/9200       host/            server/        playport 前端
-                                            9201/9202/9300
+手机 ──USB(AOA)──► carlife-link ──Unix socket──► carlifed ──WebSocket──► 浏览器
+      CarLife 协议   link/           /tmp/carlife-link.sock  server/     playport 前端
 ```
 
-四段职责：
+三段职责：
 
 | 组件 | 语言 | 职责 |
 |---|---|---|
-| `tools/usb-bridge` | C | AOA 握手、USB 帧与六条本地 TCP 通道互转 |
-| `host` | C++ | 链接 `libcarlifevehicle`，运行协议栈，把回调数据转成帧 |
+| `link` | C / C++ | USB 传输（AOA 握手、USB 帧与六条本地 TCP 通道互转）与 CarLife 车机协议栈（链接 `libcarlifevehicle`） |
 | `server` | Go | 会话状态机、H.264 拆包、WebSocket 与 HTTP 接口（对齐 playport 服务端） |
 | `vendor/playport/web` | TypeScript | WebCodecs 解码、Web Audio 播放、输入上行（原样使用，不修改） |
 
-车辆侧各通道固定端口（与库的 `SOCKET_*_LOCALHOST_PORT` 对齐）：
+`carlife-link` 是一个进程，内部两个子系统各占一半：`bridge`（USB 传输，`link/aoa.c` 与
+`link/bridge.c`）与 `stack`（协议栈，`link/main.cpp`）。两者之间不是进程边界，而是六个本地
+TCP 通道——与库自身在 ADB 模式下使用的方式一致：
+
+```
+手机 ◄─USB(AOA)─► bridge ◄─TCP 127.0.0.1─► CarLifeVehicleLib ◄─► stack
+```
+
+车辆侧各通道固定端口（与库的 `SOCKET_*_LOCALHOST_PORT` 对齐，由 `bridge` 监听、库连接）：
 
 | 通道 | 车机侧 | 手机侧 |
 |---|---|---|
@@ -41,21 +47,20 @@ CarLife 协议栈使用百度的开源车机库 [CarLifeVehicleLib](./vendor/car
 ```sh
 ./scripts/build.sh          # 全部构建；已存在的原生库自动跳过
 ./scripts/build.sh --force  # 原生库一并重建
-./scripts/build.sh --native # 只构建原生库（host/Makefile 内部调用）
+./scripts/build.sh --native # 只构建原生库（link/Makefile 内部调用）
 ```
 
-按顺序构建五段。可运行产物全部在 `dist/`，中间产物在 `.build/`，两者都不进入版本库：
+按顺序构建四段。可运行产物全部在 `dist/`，中间产物在 `.build/`，两者都不进入版本库：
 
 | 步骤 | 产物 |
 |---|---|
 | 原生库（protobuf 2.5.0 + CarLife 协议栈） | `dist/libcarlifevehicle.dylib` |
-| USB 桥接层 | `dist/carlife-usb-bridge` |
-| 车机协议栈宿主 | `dist/carlife-host` |
+| 链接进程（USB 传输 + 车机协议栈） | `dist/carlife-link` |
 | Go 后端 | `dist/carlifed` |
 | 前端（playport 原样构建后复制） | `dist/web/` |
 
-全部产物放在同一目录：`carlifed` 按自身所在目录查找桥接层、宿主与前端，因此整个 `dist/`
-可以移动到其他位置运行。原生库使用 `@rpath` 安装名，宿主使用 `@loader_path` rpath 定位同级
+全部产物放在同一目录：`carlifed` 按自身所在目录查找链接进程与前端，因此整个 `dist/`
+可以移动到其他位置运行。原生库使用 `@rpath` 安装名，链接进程使用 `@loader_path` rpath 定位同级
 目录中的 dylib，二进制中不包含构建路径。
 
 原生库需要编译 protobuf 与 69 个 C++ 源文件，首次构建需数分钟，产物已存在时跳过。
@@ -68,10 +73,10 @@ Apple Silicon），其余源文件原样编译。
 dist/carlifed
 ```
 
-单个进程即包含全部组件。`carlifed` 启动后把 `carlife-usb-bridge` 与 `carlife-host` 作为子进程
-拉起，两者中任一个退出就将这一对一起重启（重新插拔手机即由此触发）。
+一条命令启动全部组件。`carlifed` 启动后把 `carlife-link` 作为子进程拉起，它在退出时被重启
+（重新插拔手机即由此触发：USB 读失败使链接进程退出）。
 
-三个进程的日志输出到同一终端，格式与级别见「日志」。Ctrl-C 停止全部。
+两个进程的日志输出到同一终端，格式与级别见「日志」。Ctrl-C 停止全部。
 
 浏览器打开 `carlifed` 打印的任意一个地址。默认监听 `0.0.0.0:8080`，启动时列出每张网卡的地址
 （带网卡名）：
@@ -83,7 +88,7 @@ dist/carlifed
 17:08:35.984 INFO  carlifed   certificate  .../self-signed.crt (self-signed: accept the browser warning once)
 ```
 
-服务默认使用 **HTTPS**，证书为启动时生成的自签名证书（缓存在用户缓存目录，生成后复用，
+服务使用 **HTTPS**，证书为启动时生成的自签名证书（缓存在用户缓存目录，生成后复用，
 与 playport 一致）。TLS 不可省略：playport 前端使用 WebCodecs 解码，而浏览器只在安全上下文中
 提供 WebCodecs，通过局域网 IP 以 http 访问时不会提供解码器，localhost 除外。自签名证书会触发
 一次浏览器安全警告，接受即可，本机使用不需要证书颁发机构。
@@ -106,45 +111,46 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 | `CL_ADDR` | `0.0.0.0:8080` | HTTP 监听地址（默认对局域网可访问） |
 | `CL_TOKEN` | `0` | 浏览器访问令牌 |
 | `CL_FPS` | `60` | 请求手机使用的帧率 |
-| `CL_TLS` | `true` | 使用自签名证书提供 HTTPS；`false` 时仅 localhost 可用 |
 | `CL_WEB` | `<carlifed 目录>/web` | 前端静态资源目录 |
 | `CL_DEVICE_NAME` | `CarLife` | 前端显示的车机名 |
 | `CL_WIDTH` | `1280` | 请求手机的视频宽度 |
 | `CL_HEIGHT` | `720` | 请求手机的视频高度 |
-| `CL_SOCKET` | `/tmp/carlife-host.sock` | 宿主监听的 Unix socket，必须与 `host/protocol.h` 的 `CL_DEFAULT_SOCKET` 一致 |
 | `CL_CHANNEL` | `20000000` | 上报给手机的渠道号（见「车机身份上报」） |
 | `CL_CUID` | `CarLifePort` | 上报给手机的车机 id，指南要求每台唯一 |
-| `CL_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error`，`verbose` 等同于 `debug` |
-| `CL_SUPERVISE` | `true` | 由 `carlifed` 拉起并重启桥接层与宿主；`false` 时只运行自身 |
-| `CL_BRIDGE` | `<carlifed 目录>/carlife-usb-bridge` | 要拉起的桥接层可执行文件 |
-| `CL_HOST` | `<carlifed 目录>/carlife-host` | 要拉起的宿主可执行文件 |
+| `CL_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
+| `CL_LINK` | `<carlifed 目录>/carlife-link` | 要拉起的链接进程可执行文件 |
 
-`CL_BRIDGE` / `CL_HOST` / `CL_WEB` 按给定值使用，相对路径相对于当前工作目录。
+`CL_LINK` / `CL_WEB` 按给定值使用，相对路径相对于当前工作目录。监听地址、访问令牌、帧率与
+分辨率以外的行为不可配置：服务总是使用自签名证书的 HTTPS，总是拉起并重启链接进程，链接进程
+监听的 Unix socket 固定为 `/tmp/carlife-link.sock`（与 `link/protocol.h` 的 `CL_DEFAULT_SOCKET`
+一致）。
 
-桥接层与宿主由 `carlifed` 组装参数拉起，其命令行参数如下：
+链接进程由 `carlifed` 组装参数拉起（`--socket` / `--channel` / `--cuid`），其全部命令行参数如下：
 
-| 组件 | 参数 | 默认值 | 说明 |
-|---|---|---|---|
-| `carlife-usb-bridge` | `--host <address>` | `127.0.0.1` | 本地监听地址 |
-| | `--vid` / `--pid` | 无 | 指定目标设备的 VID / PID |
-| | `--list` | 关 | 只枚举 USB 设备，不操作任何设备 |
-| | `--force-handshake` | 关 | 已处于 accessory 模式时仍重发 51/52/53 |
-| | `--quiet` | 关 | 完全不打印周期性的转发统计（默认打印，但标记为 debug，由 `carlifed` 按级别过滤） |
-| `carlife-host` | `--socket <path>` | `/tmp/carlife-host.sock` | 宿主监听的 Unix socket 路径 |
-| | `--channel <name>` | `20000000` | 上报给手机的渠道号 |
-| | `--cuid <id>` | `CarLifePort` | 上报给手机的车机 id |
-| | `-q` / `--quiet` | 关 | 不打印自身运行日志 |
-| | `-v` / `--verbose` | 关 | 额外输出协议栈内部日志（默认丢弃） |
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--socket <path>` | `/tmp/carlife-link.sock` | 链接进程监听的 Unix socket 路径 |
+| `--channel <name>` | `20000000` | 上报给手机的渠道号 |
+| `--cuid <id>` | `CarLifePort` | 上报给手机的车机 id |
+| `--host <address>` | `127.0.0.1` | 六条本地通道端口的监听地址 |
+| `--vid` / `--pid` | 自动挑选 | 指定目标设备的 VID / PID |
+| `--force-handshake` | 关 | 已处于 accessory 模式时仍重发 51/52/53 |
+| `--list` | 关 | 只枚举 USB 设备，不操作任何设备 |
+| `--usb-only` | 关 | 只运行 USB 传输，不启动协议栈 |
+| `-q` / `--quiet` | 关 | 不打印运行日志与周期性的转发统计 |
+| `-v` / `--verbose` | 关 | 额外输出协议栈内部日志（默认丢弃） |
+
+周期性的转发统计默认打印但标记为 debug，由 `carlifed` 按级别过滤。
 
 ### 日志
 
-三个进程的输出汇入同一终端，格式为 `时间 级别 模块 内容`：
+两个进程的输出汇入同一终端，格式为 `时间 级别 模块 内容`：
 
 ```
 17:08:35.984 INFO  carlifed   service started
-17:08:36.422 INFO  bridge     waiting for a phone
-17:08:36.415 INFO  host       listening on /tmp/carlife-host.sock
-17:08:37.987 INFO  link       connected to carlife-host: /tmp/carlife-host.sock
+17:08:36.415 INFO  bridge     waiting for a phone
+17:08:36.422 INFO  stack      listening on /tmp/carlife-link.sock
+17:08:37.987 INFO  link       connected to carlife-link: /tmp/carlife-link.sock
 17:08:41.203 INFO  session    phone ready, video 1280x720@60, starting encoder
 17:08:41.208 DEBUG session    video: 59.8 fps received (299 frames, 3612.4 KB/s) in the last 5s, requested 60 fps
 ```
@@ -154,32 +160,35 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 | 模块 | 来源 |
 |---|---|
 | `carlifed` | 启动、关闭与配置（`server/main.go`） |
-| `supervisor` | 桥接层与宿主的拉起和重启 |
-| `link` | 与宿主的 Unix socket 连接（`server/hostclient.go`） |
+| `supervisor` | 链接进程的拉起和重启 |
+| `link` | 与链接进程的 Unix socket 连接（`server/linkclient.go`） |
 | `session` | CarLife 会话状态机：握手、视频、音频、按键 |
 | `viewer` | 浏览器连接与 HTTP/WebSocket 接口 |
-| `bridge` / `host` | 两个子进程的输出，由 `carlifed` 转发 |
+| `bridge` / `stack` | 链接进程的两半：USB 传输与协议栈，其输出由 `carlifed` 转发 |
+
+链接进程在一个流里写两个子系统的日志，因此每行都在级别之后写出所属子系统（`bridge` 或
+`stack`），`carlifed` 读回来放进模块列。不属于这两者的行（例如动态链接器自身的报错）记为 `link`。
 
 级别由 `CL_LOG_LEVEL` 选择（默认 `info`）：
 
 | 级别 | 内容 |
 |---|---|
-| `debug` | 以上全部，外加周期性遥测：实测帧率、桥接层的每通道转发统计、手机的播放进度 |
-| `info` | 状态变化：握手推进、会话开始与结束、客户端接入、子进程重建 |
+| `debug` | 以上全部，外加周期性遥测：实测帧率、USB 传输的每通道转发统计、手机的播放进度 |
+| `info` | 状态变化：握手推进、会话开始与结束、客户端接入、链接进程重建 |
 | `warn` | 可以继续运行但需要留意：令牌不符、握手停滞、手机拒绝认证、帧率被限制 |
-| `error` | 发送失败、子进程无法启动等 |
+| `error` | 发送失败、链接进程无法启动等 |
 
-周期性遥测在源头标记，而不是由 `carlifed` 按内容识别：桥接层的每通道统计（`aoa_log_debug`）与
-宿主的播放进度（`log_line_debug`）在自身时间戳后写入 `DEBUG` 标记，`carlifed` 转发时按标记过滤。
-因此这类内容在 `CL_LOG_LEVEL=debug` 下可见，而子进程单独运行时也总能看到。
+周期性遥测在源头标记，而不是由 `carlifed` 按内容识别：USB 传输的每通道统计（`aoa_log_debug`）与
+协议栈的播放进度（`log_line_debug`）在自身时间戳后写入 `DEBUG` 标记，`carlifed` 转发时按标记过滤。
+因此这类内容在 `CL_LOG_LEVEL=debug` 下可见，而链接进程单独运行时也总能看到。
 
 ### 设备接入时机
 
 | 时机 | 行为 |
 |---|---|
-| 启动前已插好 | 桥接层直接握手，走完整 51/52/53 |
-| 启动后再插 | 桥接层轮询等待设备，插上即握手；宿主一直等 `127.0.0.1:7200`，不会超时退出 |
-| 运行中重新插拔 | 桥接层退出 → `carlifed` 重建 bridge 与 host → 重新握手出新会话 |
+| 启动前已插好 | 链接进程直接握手，走完整 51/52/53，然后才连接库 |
+| 启动后再插 | 链接进程在拿到设备前一直轮询等待，插上即握手；`carlifed` 在此之前一直重试连接它的 socket |
+| 运行中重新插拔 | USB 读失败 → 链接进程退出 → `carlifed` 重建 → 重新握手出新会话 |
 
 三种情况下浏览器都不需要刷新：`carlifed` 常驻，WebSocket 断开后自动重连；会话重建后前端
 会拿到新的编解码参数并重建解码器。
@@ -196,26 +205,25 @@ adb shell svc usb setFunctions     # 空参数 = charging，清除 accessory 模
 而 `createCmdSocket()` 直接覆盖指针、不关闭旧 socket，同一进程内重复调用会留下悬空 fd 和阻塞在
 旧 fd 上的接收线程；手机侧每次 accessory 附着也都是一个新会话。
 
-`carlife-host` 因此不调用 `CCarLifeLib::connectionSetup()`，改为直接调用
+`carlife-link` 因此不调用 `CCarLifeLib::connectionSetup()`，改为直接调用
 `CConnectManager::createXSocket()` 系列。`connectionSetup()` 会先执行六条 `adb forward`，而本项目
-不使用 adb（USB 由桥接层管理），两者都有实际危害：adb server 会被重新拉起并占用手机，使桥接层
-的下一次 claim 报 `LIBUSB_ERROR_ACCESS`；`popen()` 拉起的 adb 子进程会继承宿主的监听 socket，
-宿主退出后 socket 仍被持有，`carlifed` 会连接到一个无人 accept 的 socket 且不重连。宿主自身的
-socket 也加了 `FD_CLOEXEC` 兜底。
+不使用 adb（USB 由链接进程的传输半边管理），两者都有实际危害：adb server 会被重新拉起并占用手机，
+使传输层的下一次 claim 报 `LIBUSB_ERROR_ACCESS`；`popen()` 拉起的 adb 子进程会继承链接进程的监听
+socket，进程退出后 socket 仍被持有，`carlifed` 会连接到一个无人 accept 的 socket 且不重连。
+链接进程自身的 socket 也加了 `FD_CLOEXEC` 兜底。
 
 ### 单独运行某个组件
 
 ```sh
-dist/carlife-usb-bridge --list   # 只枚举 USB 设备，并显示选中的设备
-dist/carlife-usb-bridge          # 只运行桥接层
-dist/carlife-host -v             # 只运行宿主；默认静音，-v 保留协议栈日志
-CL_SUPERVISE=false dist/carlifed # 只运行后端，连接一个已运行的宿主
+dist/carlife-link --list      # 只枚举 USB 设备，不操作任何设备
+dist/carlife-link --usb-only  # 只运行 USB 传输，不启动协议栈
+dist/carlife-link             # 完整的链接进程
+dist/carlife-link -v          # 完整链接进程，并保留协议栈内部日志
 ```
 
-桥接层与宿主接受命令行参数（见「配置」），正常情况下由 `carlifed` 组装，只有手工调试时才直接运行。
-
-`CL_SUPERVISE=false` 时 `carlifed` 只提供 HTTP/WebSocket 服务，不拉起子进程；宿主监听的 socket
-路径取自 `CL_SOCKET`（默认 `/tmp/carlife-host.sock`，与宿主自身的默认值一致）。
+链接进程接受上表的全部参数（见「配置」），正常情况下由 `carlifed` 组装，只有手工调试时才直接运行。
+`carlifed` 总是拉起链接进程，因此后端无法单独运行；手工调试链路时需要连的链接 socket 固定为
+`/tmp/carlife-link.sock`。
 
 实际帧率由手机决定，后端以 debug 级别每 5 秒打印一行实测值（`video: 29.8 fps received ...`），
 手机限制帧率时以 info 级别打印（`phone limited the frame rate to 30`）。
@@ -236,8 +244,8 @@ CL_SUPERVISE=false dist/carlifed # 只运行后端，连接一个已运行的宿
 即可）。原因是手机校验的是 `encryptValue` 中的证书，开源车机库没有百度签发的证书，自行上报的
 `authenResult` 无法通过校验。
 
-`carlife-host` 侧的鉴权收发能力保留未动（两个回调与 `CMD_AUTHEN_REQUEST` 分支）：Go 侧不发送
-该命令，宿主便不会主动发起鉴权。本节只涉及鉴权，身份上报见下一节。
+链接进程协议栈侧的鉴权收发能力保留未动（两个回调与 `CMD_AUTHEN_REQUEST` 分支）：Go 侧不发送
+该命令，协议栈便不会主动发起鉴权。本节只涉及鉴权，身份上报见下一节。
 
 ### 车机身份上报
 
@@ -329,8 +337,7 @@ CL_SUPERVISE=false dist/carlifed # 只运行后端，连接一个已运行的宿
   中的证书，而开源库没有百度签发的证书。身份上报（17.2）已恢复，渠道号使用开源车机端的默认值，
   手机是否接受该值只能上机验证。手机侧的认证判定要彻底通过，只能获取百度签发的真值、逆向手机端
   APK，或改用官方认证过的车机端实现。
-- 重新插拔需要重建 `carlife-host`，`carlifed` 会自动处理；`CL_SUPERVISE=false` 或手工单独运行时需要
-  自行重启。
+- 重新插拔需要重建 `carlife-link`，`carlifed` 会自动处理；手工单独运行链路时需要自行重启。
 - accessory 模式在手机侧粘性保留，在手动复位前无法通过重新握手拉起 CarLife App
   （`adb shell svc usb setFunctions`，见「设备接入时机」）。
 - 手机侧 CarLife App 由系统在 accessory 附着时拉起，比链路就绪慢数秒。`carlifed` 每 5 秒重发一次

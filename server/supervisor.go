@@ -12,50 +12,46 @@ import (
 	"time"
 )
 
-// restartDelay is how long to wait before rebuilding the link after the bridge or the host
-// exits. Reseating the cable needs a moment: the phone re-enumerates and only then does the
-// system start the CarLife app again.
+// restartDelay is how long to wait before rebuilding the link after the link process exits.
+// Reseating the cable needs a moment: the phone re-enumerates and only then does the system
+// start the CarLife app again.
 const restartDelay = 2 * time.Second
 
-// stopTimeout bounds the wait for a child to exit after SIGTERM before it is killed.
+// stopTimeout bounds the wait for the child to exit after SIGTERM before it is killed.
 const stopTimeout = 3 * time.Second
 
-// checkSiblings verifies that the two processes this binary starts are where it looks for
-// them, before anything is sent to the phone.
-func checkSiblings(cfg config) error {
-	for _, path := range []string{cfg.bridgePath, cfg.hostPath} {
-		info, err := os.Stat(path)
-		if err != nil {
-			return fmt.Errorf("missing %s, run ./scripts/build.sh first", path)
-		}
-		if info.Mode().Perm()&0o111 == 0 {
-			return fmt.Errorf("%s is not executable, run ./scripts/build.sh first", path)
-		}
+// checkSibling verifies that the process this binary starts is where it looks for it,
+// before anything is sent to the phone.
+func checkSibling(cfg config) error {
+	info, err := os.Stat(cfg.linkPath)
+	if err != nil {
+		return fmt.Errorf("missing %s, run ./scripts/build.sh first", cfg.linkPath)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("%s is not executable, run ./scripts/build.sh first", cfg.linkPath)
 	}
 	return nil
 }
 
-// supervisor starts carlife-usb-bridge and carlife-host next to this binary and restarts
-// them together whenever either one exits, so that starting a link is one process to start
-// and one to stop.
+// supervisor starts carlife-link next to this binary and restarts it whenever it exits, so
+// that running a link is one process to start and one to stop.
 //
-// The two are restarted as a pair because the link cannot be resumed in place:
-// CarLifeVehicleLib only establishes its six channels inside connectionSetup(), and the
-// phone side starts a fresh session on every accessory attach.
+// It is restarted rather than resumed in place because the link cannot be re-established
+// inside a running process: CarLifeVehicleLib opens its six channels in its own setup, which
+// also runs the adb forward commands this project does not use, and the phone side starts a
+// fresh session on every accessory attach.
 type supervisor struct {
-	bridgePath string
-	hostPath   string
-	hostArgs   []string
+	linkPath string
+	linkArgs []string
 }
 
 func newSupervisor(cfg config) *supervisor {
 	return &supervisor{
-		bridgePath: cfg.bridgePath,
-		hostPath:   cfg.hostPath,
-		// The host reads its flags from the command line; carlifed owns the values, so it
-		// passes them explicitly instead of relying on the host's own defaults.
-		hostArgs: []string{
-			"--socket", cfg.socketPath,
+		linkPath: cfg.linkPath,
+		// The link takes its flags from the command line; carlifed owns the values, so it
+		// passes them explicitly instead of relying on the binary's own defaults.
+		linkArgs: []string{
+			"--socket", defaultSocketPath,
 			"--channel", cfg.channel,
 			"--cuid", cfg.cuid,
 		},
@@ -64,10 +60,10 @@ func newSupervisor(cfg config) *supervisor {
 
 func (s *supervisor) run(ctx context.Context) {
 	for {
-		bridge, host := s.startPair()
-
-		if bridge == nil && host == nil {
-			// Neither one is running, so there is nothing to wait for: back off and retry.
+		link, err := startChild(moduleLink, s.linkPath, s.linkArgs...)
+		if err != nil {
+			// Nothing is running, so there is nothing to wait for: back off and retry.
+			errorf(moduleSupervisor, "cannot start %s: %v", s.linkPath, err)
 			if !waitOrStop(ctx, restartDelay) {
 				return
 			}
@@ -76,14 +72,11 @@ func (s *supervisor) run(ctx context.Context) {
 
 		select {
 		case <-ctx.Done():
-		case err := <-exited(bridge):
-			infof(moduleSupervisor, "carlife-usb-bridge exited (%s), rebuilding the link", exitReason(err))
-		case err := <-exited(host):
-			infof(moduleSupervisor, "carlife-host exited (%s), rebuilding the link", exitReason(err))
+		case err := <-link.done:
+			infof(moduleSupervisor, "carlife-link exited (%s), rebuilding the link", exitReason(err))
 		}
 
-		bridge.stop()
-		host.stop()
+		link.stop()
 		if ctx.Err() != nil {
 			return
 		}
@@ -94,23 +87,10 @@ func (s *supervisor) run(ctx context.Context) {
 	}
 }
 
-// startPair runs both children. A child that cannot be started is reported and skipped: the
-// other one is still worth running, and the retry loop will try again.
-func (s *supervisor) startPair() (bridge, host *childProcess) {
-	bridge, err := startChild(moduleBridge, s.bridgePath)
-	if err != nil {
-		errorf(moduleSupervisor, "cannot start %s: %v", s.bridgePath, err)
-	}
-	host, err = startChild(moduleHost, s.hostPath, s.hostArgs...)
-	if err != nil {
-		errorf(moduleSupervisor, "cannot start %s: %v", s.hostPath, err)
-	}
-	return bridge, host
-}
-
 // childProcess is a running child plus the channel that reports how it ended.
 type childProcess struct {
-	// module is the name the child's output is tagged with.
+	// module is the name the child's output is tagged with when the child does not name the
+	// subsystem itself.
 	module string
 	cmd    *exec.Cmd
 	done   chan error
@@ -148,9 +128,9 @@ func startChild(module, path string, args ...string) (*childProcess, error) {
 	return child, nil
 }
 
-// logChild relays one line at a time from a child. The child stamps its own lines and marks
-// the non-info ones; both are replaced by this process's own columns, so all three
-// processes end up in one format.
+// logChild relays one line at a time from the child. The child stamps its own lines and
+// names the subsystem each one came from; both are replaced by this process's own columns,
+// so the link's output and this process's output end up in one format.
 func logChild(module string, output io.ReadCloser) {
 	defer output.Close()
 	reader := bufio.NewReader(output)
@@ -159,9 +139,12 @@ func logChild(module string, output io.ReadCloser) {
 		// Scanner would silently give up on them at its buffer limit.
 		line, err := reader.ReadString('\n')
 		if line != "" {
-			level, message := parseChildLine(line)
+			level, subsystem, message := parseChildLine(line)
+			if subsystem == "" {
+				subsystem = module
+			}
 			if strings.TrimSpace(message) != "" {
-				logLine(level, module, "%s", message)
+				logLine(level, subsystem, "%s", message)
 			}
 		}
 		if err != nil {
@@ -170,17 +153,8 @@ func logChild(module string, output io.ReadCloser) {
 	}
 }
 
-// exited returns the channel to watch, or nil when the child never started. A nil channel
-// blocks forever in a select, which is exactly right: there is nothing to wait for.
-func exited(c *childProcess) <-chan error {
-	if c == nil {
-		return nil
-	}
-	return c.done
-}
-
-// stop asks the child to exit and kills it if it does not. The signal matters for the
-// bridge: it releases the USB claim on the way out.
+// stop asks the child to exit and kills it if it does not. The signal matters for the USB
+// transport: it releases the USB claim on the way out.
 func (c *childProcess) stop() {
 	if c == nil || c.cmd.Process == nil {
 		return

@@ -67,6 +67,10 @@ static void aoa_vlog(const char *level, const char *fmt, va_list ap)
     if (level != NULL) {
         fprintf(stderr, "%s ", level);
     }
+    /* Subsystem token: the link process writes the USB layer's and the protocol stack's
+     * output to one stream, so every line states which half it came from. The Go backend
+     * reads it back into the module column (server/logging.go). */
+    fputs("bridge ", stderr);
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     fflush(stderr);

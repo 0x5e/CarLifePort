@@ -1,7 +1,7 @@
 /*
- * Frame protocol between carlife-host and the Go backend.
+ * Frame protocol between carlife-link and the Go backend.
  *
- * Transport: AF_UNIX SOCK_STREAM, with carlife-host as the listening side.
+ * Transport: AF_UNIX SOCK_STREAM, with carlife-link as the listening side.
  * Frame format: [1B channel][4B payloadLen big-endian][payload]
  * The first byte of the payload is the tag, the remaining bytes are data; the
  * meaning of the tag is determined by the channel.
@@ -9,18 +9,14 @@
  * Channel values match E_CHANNEL_TYPE in the CarLife protocol so they can be
  * cross-referenced with the library source.
  */
-#ifndef CARLIFE_HOST_PROTOCOL_H
-#define CARLIFE_HOST_PROTOCOL_H
+#ifndef CARLIFE_LINK_PROTOCOL_H
+#define CARLIFE_LINK_PROTOCOL_H
 
 /* Frame header length: 1B channel + 4B payloadLen (big-endian) */
 #define CL_FRAME_HEADER 5
 
-/* Default Unix socket path */
-#define CL_DEFAULT_SOCKET "/tmp/carlife-host.sock"
-
-/* Local port of the usb-bridge command channel; the host uses it to detect
- * whether the bridge is ready */
-#define CL_BRIDGE_PORT 7200
+/* Default Unix socket path; the Go backend connects to this. */
+#define CL_DEFAULT_SOCKET "/tmp/carlife-link.sock"
 
 /* Maximum length of a single frame, used for defensive validation
  * (video frames are at most 600KB plus margin) */
@@ -35,7 +31,7 @@ enum {
     CH_CTRL = 6
 };
 
-/* ---- Upstream: carlife-host -> Go backend ---- */
+/* ---- Upstream: carlife-link -> Go backend ---- */
 
 /* CH_CMD */
 enum {
@@ -75,7 +71,7 @@ enum {
 /* CH_CTRL */
 enum { EV_CTRL_UI_ACTION_SOUND = 1 };
 
-/* ---- Downstream: Go backend -> carlife-host ---- */
+/* ---- Downstream: Go backend -> carlife-link ---- */
 
 /* CH_CMD */
 enum {
@@ -107,4 +103,4 @@ enum {
 /* CH_VR */
 enum { CMD_VR_DATA = 1 };       /* [4B timestamp big-endian][PCM] */
 
-#endif /* CARLIFE_HOST_PROTOCOL_H */
+#endif /* CARLIFE_LINK_PROTOCOL_H */

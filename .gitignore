@@ -4,7 +4,7 @@
 # Agent 工作数据（本地记忆、缓存）
 .workbuddy/
 
-# 构建产物：可运行的那一份全在 dist/（carlifed / carlife-host / carlife-usb-bridge /
+# 构建产物：可运行的那一份全在 dist/（carlifed / carlife-link /
 # libcarlifevehicle.dylib / web），中间物在 .build/
 dist/
 .build/
@@ -15,4 +15,4 @@ tools/aoa-probe/*.o
 tools/aoa-probe/*.dSYM/
 
 # 编译中间物
-tools/usb-bridge/*.o
+link/*.o
