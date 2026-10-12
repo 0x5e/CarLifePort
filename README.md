@@ -1,12 +1,12 @@
 # CarLifePort
 
-CarLife 车机端（web 版）。服务端跑车机侧协议栈，浏览器用 WebCodecs 当屏幕。
+CarLife 车机端（web 版）。服务端运行车机侧协议栈，浏览器用 WebCodecs 解码显示。
 
-参考 [playport](https://github.com/youcci/playport) 的分层方式：车机协议在服务端，浏览器只负责解码显示。
-CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/carlife)（Apache-2.0）。
+分层参考 [playport](https://github.com/youcci/playport)：车机协议在服务端，浏览器只负责解码显示。
+CarLife 协议栈使用百度的开源车机库 [CarLifeVehicleLib](./vendor/carlife)（Apache-2.0）。
 
-浏览器端**直接原样使用 playport 的前端**（`vendor/playport/web`，不改动一行），本项目只
-实现它期望的那套后端接口。因此仓库里没有自己的 `web/` 目录。
+浏览器端直接使用 playport 的前端（`vendor/playport/web`，不做任何修改），本项目只实现它所需的
+后端接口，因此仓库中没有自己的 `web/` 目录。
 
 ## 架构
 
@@ -21,7 +21,7 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 | 组件 | 语言 | 职责 |
 |---|---|---|
 | `tools/usb-bridge` | C | AOA 握手、USB 帧与六条本地 TCP 通道互转 |
-| `host` | C++ | 链接 `libcarlifevehicle`，跑协议栈，把回调数据转成帧 |
+| `host` | C++ | 链接 `libcarlifevehicle`，运行协议栈，把回调数据转成帧 |
 | `server` | Go | 会话状态机、H.264 拆包、WebSocket 与 HTTP 接口（对齐 playport 服务端） |
 | `vendor/playport/web` | TypeScript | WebCodecs 解码、Web Audio 播放、输入上行（原样使用，不修改） |
 
@@ -40,11 +40,11 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 
 ```sh
 ./scripts/build.sh          # 全部构建；已存在的原生库自动跳过
-./scripts/build.sh --force  # 连原生库一起重建
+./scripts/build.sh --force  # 原生库一并重建
 ./scripts/build.sh --native # 只构建原生库（host/Makefile 内部调用）
 ```
 
-按顺序构建五段。可运行的那一份全在 `dist/`，中间物在 `.build/`，两者都不进入版本库：
+按顺序构建五段。可运行产物全部在 `dist/`，中间产物在 `.build/`，两者都不进入版本库：
 
 | 步骤 | 产物 |
 |---|---|
@@ -52,15 +52,15 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 | USB 桥接层 | `dist/carlife-usb-bridge` |
 | 车机协议栈宿主 | `dist/carlife-host` |
 | Go 后端 | `dist/carlifed` |
-| 前端（playport 原样构建后拷进来） | `dist/web/` |
+| 前端（playport 原样构建后复制） | `dist/web/` |
 
-都放在同一层是有意的：`carlifed` 按「与自己相邻」去找桥接层、宿主和前端，所以整个 `dist/`
-可以拷到别处直接运行。原生库用 `@rpath` 安装名、宿主用 `@loader_path` rpath 去定位自己旁边
-那份 dylib，二进制里不留构建路径。
+全部产物放在同一目录：`carlifed` 按自身所在目录查找桥接层、宿主与前端，因此整个 `dist/`
+可以移动到其他位置运行。原生库使用 `@rpath` 安装名，宿主使用 `@loader_path` rpath 定位同级
+目录中的 dylib，二进制中不包含构建路径。
 
-原生库要编译 protobuf 与 69 个 C++ 源文件，首次构建需数分钟；产物已存在时跳过。
-`build.sh` 会给 protobuf 2.5.0 打一个 3 行补丁（补上 `__aarch64__` 分支，
-原版不认识 Apple Silicon），其余源文件原样编译。
+原生库需要编译 protobuf 与 69 个 C++ 源文件，首次构建需数分钟，产物已存在时跳过。
+`build.sh` 为 protobuf 2.5.0 打一个 3 行补丁（补充 `__aarch64__` 分支，上游版本不支持
+Apple Silicon），其余源文件原样编译。
 
 ## 运行
 
@@ -68,18 +68,13 @@ CarLife 协议栈用的是百度的开源车机库 [CarLifeVehicleLib](./vendor/
 dist/carlifed
 ```
 
-一个进程就是全部。`carlifed` 启动时依次做：
-
-1. 检查桌面版微信是否在运行 —— 它自己会对 Android 做 AOA 握手并独占整个 USB 设备，
-   检测到就直接中止并提示；
-2. 复位手机 USB 模式（清 accessory 残留、停掉 adb server），没有手机或没有 adb 只是提示；
-3. 把 `carlife-usb-bridge` 与 `carlife-host` 作为子进程拉起来，两者任一个退出就把这一对
-   一起重启（拔插手机就是这条路）。
+单个进程即包含全部组件。`carlifed` 启动后把 `carlife-usb-bridge` 与 `carlife-host` 作为子进程
+拉起，两者中任一个退出就将这一对一起重启（重新插拔手机即由此触发）。
 
 三个进程的日志带 `[bridge]` / `[host]` 前缀输出到同一终端，Ctrl-C 停止全部。
 
-然后浏览器打开 `carlifed` 打印的任意一个地址。默认监听 `0.0.0.0:8080`，启动时会像 vite
-一样把每张网卡的地址都打出来（带网卡名）：
+浏览器打开 `carlifed` 打印的任意一个地址。默认监听 `0.0.0.0:8080`，启动时列出每张网卡的地址
+（带网卡名）：
 
 ```
   viewer URL   https://127.0.0.1:8080/?token=0
@@ -87,104 +82,108 @@ dist/carlifed
   certificate  .../self-signed.crt (self-signed: accept the browser warning once)
 ```
 
-服务默认走 **HTTPS**，用的是启动时自动生成的自签证书（缓存在用户缓存目录，**生成一次
-之后一直复用**，与 playport 一致）。之所以不能省掉 TLS：playport 前端用 WebCodecs 解码，
-而 WebCodecs 只在安全上下文里可用，局域网 IP 走 http 时浏览器根本不给解码器，只有
-localhost 例外。自签证书浏览器会报「不安全」，接受一次即可，本机自用不需要证书颁发机构。
+服务默认使用 **HTTPS**，证书为启动时生成的自签名证书（缓存在用户缓存目录，生成后复用，
+与 playport 一致）。TLS 不可省略：playport 前端使用 WebCodecs 解码，而浏览器只在安全上下文中
+提供 WebCodecs，通过局域网 IP 以 http 访问时不会提供解码器，localhost 除外。自签名证书会触发
+一次浏览器安全警告，接受即可，本机使用不需要证书颁发机构。
 
-浏览器在弹警告页之前会先中止一次连接，服务端会收到一个 `unknown_ca` 告警。这类握手错误
-**不打印**（playport 也不打印，启动时那句提示已经说明要接受一次警告）；其它握手错误照常
-打印。注意证书是按生成时的网卡地址签的，之后换网络导致某个地址不在证书里时，浏览器会再
-要一次警告 —— 与 playport 行为一致。
+浏览器在显示警告页之前会中止一次连接，服务端因此收到一次 `unknown_ca` 告警；这类握手错误
+不打印（与 playport 一致，启动日志已说明需要接受一次警告），其它握手错误照常打印。证书按生成
+时的网卡地址签发，更换网络后某个地址不在证书中时会再次出现警告，与 playport 行为一致。
 
-地址里的 `token` 是 playport 前端要求的访问令牌，缺了它前端不会建立连接。
-首次打开后令牌会存在 localStorage，之后不带 `?token=` 直接访问也可以；但令牌变了以后
-localStorage 里还是旧值，需要用带新 `?token=` 的地址再打开一次。
+URL 中的 `token` 是 playport 前端要求的访问令牌，缺失时不建立连接。令牌在首次打开后存入
+localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorage 仍保留旧值，需要用带新
+`?token=` 的地址再打开一次。
 
-### 配置（环境变量）
+### 配置
 
-参数只有一种传递方式：`CL_` 前缀的环境变量。没有命令行参数，`carlifed --help` 列出全部；
-默认值就写在 `server/main.go` 里，启动命令里不需要重复一遍：
+`carlifed` 的配置只通过 `CL_` 前缀的环境变量传入，没有命令行参数，`dist/carlifed --help`
+列出全部项，默认值定义在 `server/main.go`。
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `CL_ADDR` | `0.0.0.0:8080` | HTTP 监听地址 |
+| `CL_ADDR` | `0.0.0.0:8080` | HTTP 监听地址（默认对局域网可访问） |
 | `CL_TOKEN` | `0` | 浏览器访问令牌 |
-| `CL_FPS` | `60` | 请求手机用的帧率（手机可能上限更低，见后文） |
-| `CL_TLS` | `true` | 用自签证书开 HTTPS；`false` 只在 localhost 可用 |
+| `CL_FPS` | `60` | 请求手机使用的帧率 |
+| `CL_TLS` | `true` | 使用自签名证书提供 HTTPS；`false` 时仅 localhost 可用 |
 | `CL_WEB` | `<carlifed 目录>/web` | 前端静态资源目录 |
 | `CL_DEVICE_NAME` | `CarLife` | 前端显示的车机名 |
-| `CL_WIDTH` / `CL_HEIGHT` | `1280` / `720` | 请求手机的视频尺寸 |
+| `CL_WIDTH` | `1280` | 请求手机的视频宽度 |
+| `CL_HEIGHT` | `720` | 请求手机的视频高度 |
 | `CL_SOCKET` | `/tmp/carlife-host.sock` | 宿主监听的 Unix socket，必须与 `host/protocol.h` 的 `CL_DEFAULT_SOCKET` 一致 |
 | `CL_CHANNEL` | `20000000` | 上报给手机的渠道号（见「车机身份上报」） |
 | `CL_CUID` | `CarLifePort` | 上报给手机的车机 id，指南要求每台唯一 |
-| `CL_SUPERVISE` | `true` | 是否由 carlifed 拉起并重启桥接层与宿主；`0` 表示只跑自身 |
-| `CL_BRIDGE` / `CL_HOST` | `<carlifed 目录>/carlife-usb-bridge`、`<carlifed 目录>/carlife-host` | 要拉起的那两个可执行文件 |
+| `CL_SUPERVISE` | `true` | 由 `carlifed` 拉起并重启桥接层与宿主；`false` 时只运行自身 |
+| `CL_BRIDGE` | `<carlifed 目录>/carlife-usb-bridge` | 要拉起的桥接层可执行文件 |
+| `CL_HOST` | `<carlifed 目录>/carlife-host` | 要拉起的宿主可执行文件 |
 
-`CL_BRIDGE` / `CL_HOST` / `CL_WEB` 给什么用什么，相对路径按当前工作目录解释。
-桥接层与宿主自己仍用命令行参数（它们是被拉起的两个，参数由 `carlifed` 组装），见
-「单独运行某个组件」。
+`CL_BRIDGE` / `CL_HOST` / `CL_WEB` 按给定值使用，相对路径相对于当前工作目录。
 
-默认对外可访问（局域网内其它机器也能打开这个页面，上面就是手机画面和控制通道，
-保护只有这一层 token）。要限制成本机访问：
+桥接层与宿主由 `carlifed` 组装参数拉起，其命令行参数如下：
 
-```sh
-CL_ADDR=127.0.0.1:8080 dist/carlifed
-```
+| 组件 | 参数 | 默认值 | 说明 |
+|---|---|---|---|
+| `carlife-usb-bridge` | `--host <address>` | `127.0.0.1` | 本地监听地址 |
+| | `--vid` / `--pid` | 无 | 指定目标设备的 VID / PID |
+| | `--list` | 关 | 只枚举 USB 设备，不操作任何设备 |
+| | `--force-handshake` | 关 | 已处于 accessory 模式时仍重发 51/52/53 |
+| | `--quiet` | 关 | 不打印周期性统计 |
+| `carlife-host` | `--socket <path>` | `/tmp/carlife-host.sock` | 宿主监听的 Unix socket 路径 |
+| | `--channel <name>` | `20000000` | 上报给手机的渠道号 |
+| | `--cuid <id>` | `CarLifePort` | 上报给手机的车机 id |
+| | `-q` / `--quiet` | 关 | 不打印自身运行日志 |
+| | `-v` / `--verbose` | 关 | 额外输出协议栈内部日志（默认丢弃） |
 
-只在本机用、又不想看证书告警时，可以退回明文 http（仅 localhost 有安全上下文，
-所以只有本机能用）：
-
-```sh
-CL_ADDR=127.0.0.1:8080 CL_TLS=false dist/carlifed
-```
-
-### 手机什么时候插都行
+### 设备接入时机
 
 | 时机 | 行为 |
 |---|---|
-| 启动前已插好 | 桥接层直接握手（accessory 残留已清），走完整 51/52/53 |
+| 启动前已插好 | 桥接层直接握手，走完整 51/52/53 |
 | 启动后再插 | 桥接层轮询等待设备，插上即握手；宿主一直等 `127.0.0.1:7200`，不会超时退出 |
 | 运行中重新插拔 | 桥接层退出 → `carlifed` 重建 bridge 与 host → 重新握手出新会话 |
 
-三种情况下浏览器都不用刷新：`carlifed` 常驻，WebSocket 断开后自动重连；会话重建后
-前端会拿到新的编解码参数并重建解码器。
+三种情况下浏览器都不需要刷新：`carlifed` 常驻，WebSocket 断开后自动重连；会话重建后前端
+会拿到新的编解码参数并重建解码器。
 
-重新插拔之所以要重建进程而不是原地重连：CarLifeVehicleLib 只在 `connectionSetup()`
-里建立六条通道，而 `createCmdSocket()` 是直接覆盖指针、不关闭旧 socket，同一进程内
-重复调用会留下悬空 fd 和阻塞在旧 fd 上的接收线程；手机侧每次 accessory 附着也都是
-一个新会话。
+accessory 模式在手机侧是粘性的，跨重新插拔保留。手机仍处于上一次连接的 accessory 模式时，
+重新握手不会触发系统重新拉起 CarLife App（仅当从常规模式完成一次全新握手时，系统才广播
+`USB_ACCESSORY_ATTACHED`）。这种情况需要先手动复位手机的 USB 模式：
 
-`carlife-host` 因此不调用 `CCarLifeLib::connectionSetup()`，改为直接调
-`CConnectManager::createXSocket()` 系列。`connectionSetup()` 会先跑六条
-`adb forward`，而本项目不用 adb（USB 归桥接层管），这两点都有实际危害：adb server
-会被重新拉起并占住手机，使桥接层下次 claim 报 `LIBUSB_ERROR_ACCESS`；`popen()` 拉起
-的 adb 子进程还会继承宿主的监听 socket，宿主退出后 socket 仍被持有，`carlifed` 会连上
-一个没人 accept 的僵尸 socket 且永不重连。宿主自身的 socket 也加了 `FD_CLOEXEC` 兜底。
+```sh
+adb shell svc usb setFunctions     # 空参数 = charging，清除 accessory 模式
+```
+
+重新插拔要重建进程而不是原地重连：CarLifeVehicleLib 只在 `connectionSetup()` 中建立六条通道，
+而 `createCmdSocket()` 直接覆盖指针、不关闭旧 socket，同一进程内重复调用会留下悬空 fd 和阻塞在
+旧 fd 上的接收线程；手机侧每次 accessory 附着也都是一个新会话。
+
+`carlife-host` 因此不调用 `CCarLifeLib::connectionSetup()`，改为直接调用
+`CConnectManager::createXSocket()` 系列。`connectionSetup()` 会先执行六条 `adb forward`，而本项目
+不使用 adb（USB 由桥接层管理），两者都有实际危害：adb server 会被重新拉起并占用手机，使桥接层
+的下一次 claim 报 `LIBUSB_ERROR_ACCESS`；`popen()` 拉起的 adb 子进程会继承宿主的监听 socket，
+宿主退出后 socket 仍被持有，`carlifed` 会连接到一个无人 accept 的 socket 且不重连。宿主自身的
+socket 也加了 `FD_CLOEXEC` 兜底。
 
 ### 单独运行某个组件
 
 ```sh
-dist/carlife-usb-bridge --list   # 枚举 USB 设备，并显示挑中的是哪个
-dist/carlife-usb-bridge          # 只跑桥接层
-dist/carlife-host -v             # 只跑宿主；默认静音，-v 保留库日志
-CL_SUPERVISE=0 dist/carlifed     # 只跑后端，连一个已经在跑的宿主
+dist/carlife-usb-bridge --list   # 只枚举 USB 设备，并显示选中的设备
+dist/carlife-usb-bridge          # 只运行桥接层
+dist/carlife-host -v             # 只运行宿主；默认静音，-v 保留协议栈日志
+CL_SUPERVISE=false dist/carlifed # 只运行后端，连接一个已运行的宿主
 ```
 
-这两个可执行文件仍用命令行参数（`--socket` / `--channel` / `--cuid` / `-v` / `--vid` /
-`--pid` / `--force-handshake`，各自的 `--help` 可查）：它们是被拉起的两个，
-正常情况下由 `carlifed` 组装参数，只有手工调试才直接运行。
+桥接层与宿主接受命令行参数（见「配置」），正常情况下由 `carlifed` 组装，只有手工调试时才直接运行。
 
-`CL_SUPERVISE=0` 时 `carlifed` 只做 HTTP/WebSocket 服务，不检测微信、不动 adb、不拉子进程，
-宿主的 socket 路径用 `CL_SOCKET`（默认 `/tmp/carlife-host.sock`，与宿主自己的默认值一致）。
+`CL_SUPERVISE=false` 时 `carlifed` 只提供 HTTP/WebSocket 服务，不拉起子进程；宿主监听的 socket
+路径取自 `CL_SOCKET`（默认 `/tmp/carlife-host.sock`，与宿主自身的默认值一致）。
 
-帧率默认 60，用环境变量覆盖：`CL_FPS=30 dist/carlifed`。实际帧率由手机
-决定，后端每 5 秒打印一行实测值（`video: 29.8 fps received ...`），手机把帧率压低时也
-会打印（`phone limited the frame rate to 30`）。
+实际帧率由手机决定，后端每 5 秒打印一行实测值（`video: 29.8 fps received ...`），手机限制帧率时
+也会打印（`phone limited the frame rate to 30`）。
 
 ### 车机鉴权（当前停用）
 
-协议里有这条流程，手机对没走完的车机会提示「未认证的车机端」并在几分钟后断开：
+协议中存在这条流程，未走完的手机侧会提示「未认证的车机端」并在数分钟后断开连接：
 
 ```
 车机 --MSG_CMD_HU_AUTHEN_REQUEST(randomValue)--> 手机
@@ -193,17 +192,17 @@ CL_SUPERVISE=0 dist/carlifed     # 只跑后端，连一个已经在跑的宿主
 手机 --MSG_CMD_MD_AUTHEN_RESULT(authenResult)--> 车机
 ```
 
-曾经由 `carlifed` 在协议版本匹配后发起（未确认前每 30 秒重发一次），但真机上
-**一发就立刻被判未认证**，比不问还糟：手机要校验的是 `encryptValue` 里的证书，开源车机库
-没有百度签发的证书，自己上报的 `authenResult` 骗不过去。所以两处调用点先注释掉了
-（`server/session.go` 的 `requestAuthentication()`，恢复时把注释放开即可）。
-`carlife-host` 侧的鉴权收发能力保留未动（两个回调 + `CMD_AUTHEN_REQUEST` 分支）：
-Go 侧不发这条命令，宿主就不会自己发起鉴权。（注意这只针对鉴权；身份上报是另一回事，
-见下一节。）
+该流程曾由 `carlifed` 在协议版本匹配后发起（确认前每 30 秒重发一次），但真机上发送后立即被判为
+未认证，因此调用点已注释停用（`server/session.go` 的 `requestAuthentication()`，恢复时放开注释
+即可）。原因是手机校验的是 `encryptValue` 中的证书，开源车机库没有百度签发的证书，自行上报的
+`authenResult` 无法通过校验。
+
+`carlife-host` 侧的鉴权收发能力保留未动（两个回调与 `CMD_AUTHEN_REQUEST` 分支）：Go 侧不发送
+该命令，宿主便不会主动发起鉴权。本节只涉及鉴权，身份上报见下一节。
 
 ### 车机身份上报
 
-真车机在发完协议版本后还会紧接着上报两条身份信息，顺序如下（取自真车机抓包）：
+真车机在发完协议版本后紧接着上报两条身份信息，顺序如下（取自真机抓包）：
 
 ```
 车机 --MSG_CMD_HU_PROTOCOL_VERSION(0x00018001)--> 手机
@@ -212,24 +211,24 @@ Go 侧不发这条命令，宿主就不会自己发起鉴权。（注意这只�
 车机 --MSG_CMD_VIDEO_ENCODER_INIT(0x00018007)--> 手机
 ```
 
-开源库自带的测试程序这两条都没发。**但它们不只是统计信息**：指南 17.2 写明手机端靠
-`MSG_CMD_STATISTIC_INFO` 里的渠道号判断车机是否合法，校验通过才回 `MSG_CMD_MD_AUTHEN_RESULT`
-并**启动车厂相关的定制服务**；而手机的 `MSG_CMD_MD_FEATURE_CONFIG_REQUEST(0x00010051)` 只在
-「双方握手认证通过后」才发。真机日志里始终没有 `replied to phone feature config request`
-这一行，正是这条链没走通的表现：我们回了功能定制项（含音频传输方式 `AUDIO_TRANSMISSION_MODE`），
-手机却从来没来问过。
+开源库自带的测试程序不发送这两条。它们除统计用途外还有认证作用：指南 17.2 指出手机端依据
+`MSG_CMD_STATISTIC_INFO` 中的渠道号判断车机是否合法，校验通过后才回 `MSG_CMD_MD_AUTHEN_RESULT`
+并启动车厂相关的定制服务；而手机的 `MSG_CMD_MD_FEATURE_CONFIG_REQUEST(0x00010051)` 只在
+「双方握手认证通过后」才发送。此前真机日志中始终没有 `replied to phone feature config request`
+一行，即这条链未走通：服务端回复了功能定制项（含音频传输方式 `AUDIO_TRANSMISSION_MODE`），
+而手机从未发起请求。
 
-渠道号取百度签发的真值拿不到，这里用开源车机端自己的默认值
-`CommonParams.VEHICLE_CHANNEL_AFTER_MARKET = "20000000"`（后装市场渠道），`--channel` 可覆盖。
-`cuid` 指南要求每台车机唯一（重复会让手机主动断开连接），默认 `CarLifePort`，`--cuid` 可覆盖。
+百度签发的渠道号真值无法获取，此处使用开源车机端的默认值
+`CommonParams.VEHICLE_CHANNEL_AFTER_MARKET = "20000000"`（后装市场渠道），可由 `CL_CHANNEL` 覆盖。
+`cuid` 按指南要求每台车机唯一（重复会使手机主动断开连接），默认 `CarLifePort`，可由 `CL_CUID` 覆盖。
 
-上一轮曾把整段用 `#if 0` 停掉做排除（当时判断「发了也没用」），现在恢复：在「未上报任何身份」的
-状态下手机既不主动断开、也不是没声音的原因，却静默丢掉了功能定制这条链。恢复后若手机一连上就
-断开，说明手机拒绝了这个渠道号，退回停用状态即可。
+该上报曾整段用 `#if 0` 停用（当时的判断是发送无效），现已恢复：在未上报任何身份的状态下，手机
+既不主动断开，也并非没有声音的原因，同时静默丢掉了功能定制这条链。恢复后若手机一连上就断开，
+说明手机拒绝该渠道号，退回停用状态即可。
 
 ## 与 playport 前端的接口对齐
 
-`server/` 实现的正是 playport 服务端的那套契约，前端因此可以直接用：
+`server/` 实现 playport 服务端的接口契约，前端因此可以直接使用：
 
 | 接口 | 内容 |
 |---|---|
@@ -243,55 +242,57 @@ Go 侧不发这条命令，宿主就不会自己发起鉴权。（注意这只�
 
 | 前端消息 | CarLife 侧 |
 |---|---|
-| `touch` 的 contacts | 取 id 最小的那个触点，按按下状态映射 DOWN / MOVE / UP；空列表即 UP，坐标沿用最后位置（CarLife 只支持单点） |
+| `touch` 的 contacts | 取 id 最小的触点，按按下状态映射 DOWN / MOVE / UP；空列表即 UP，坐标沿用最后位置（CarLife 只支持单点） |
 | `knob.select` / `home` / `back` | 硬按键 ok(0x14) / main(0x1E) / back(0x0E) |
 | `knob.x` 方向 | 硬按键 move left(0x15) / move right(0x16) |
 | `knob.y` 方向 | 硬按键 selector previous(0x07) / selector next(0x06) |
 | `media` 3 / 4 / 5 | 硬按键 media start(0x1F) 与 media stop(0x20) 交替 / seek add(0x10) / seek sub(0x0F) |
-| `telephony` 1 / 2 | 硬按键 phone call(0x02) 或 phone end(0x03)，按手机上报的通话状态选一个 / mute(0x13) |
+| `telephony` 1 / 2 | 硬按键 phone call(0x02) 或 phone end(0x03)，按手机上报的通话状态选择 / mute(0x13) |
 | `siri` | 硬按键 VR start(0x21) 与 VR stop(0x22) 交替 |
 | `keyframe` | 丢弃：CarLife 没有「请求关键帧」命令 |
 | `night` | 丢弃：CarPlay 专属，CarLife 无对应 |
 | `ping` | 回 `{"type":"pong"}` |
 | 二进制帧（麦克风上行） | 丢弃：CarLife 的语音上行由手机发起 |
 
-几个容易踩错的地方：
+实现要点：
 
-- **方向键分两族**。`selector previous/next` 是「在当前小区域里换焦点」（等于转旋钮），
-  `move left/right` 是「跳到左右相邻的小区域」。`move up/down` 协议里也有，但手机在列表界面上不响应
-  （实测发 0x17/0x18 无反应，发 0x07/0x06 焦点会上下移动），而 selector 没有横向版本，所以纵轴用
-  selector、横轴用 move。
-- **`home` 用 `main(0x1E)`**。`KEYCODE_Home(0x01)` 的含义是「按下手机的 Home 键」，会把 CarLife 切到
-  后台；「回到 CarLife 主界面」是 `KEYCODE_MAIN`，开源车机端的 Home 按钮发的也是它
+- **方向键分两组。** `selector previous/next` 的含义是「在当前小区域中切换焦点」（等效于旋转旋钮），
+  `move left/right` 的含义是「跳到左右相邻的小区域」。`move up/down` 协议中同样存在，但手机在列表
+  界面上不响应（实测 0x17/0x18 无反应，0x07/0x06 可使焦点上下移动），而 selector 没有横向版本，
+  因此纵轴使用 selector、横轴使用 move。
+- **`home` 使用 `main(0x1E)`。** `KEYCODE_Home(0x01)` 的含义是「按下手机的 Home 键」，会把 CarLife
+  切到后台；「回到 CarLife 主界面」对应 `KEYCODE_MAIN`，开源车机端的 Home 按钮发送的也是它
   （`ControlTestWindow`）。
-- **`media` 3 不能用 `KEYCODE_Media(0x09)`**。那一条的含义是「进入手机端 CarLife 的音乐播放界面」，
-  按下去只跳界面（实测如此）；播放/暂停要用 `media start(0x1F)` / `media stop(0x20)`。上一首/下一首用
-  `seek sub/add`，开源车机端把 Android 的 `KEYCODE_MEDIA_PREVIOUS/NEXT` 映射到这两条
-  （`MediaButtonReceiver`），不要用 `selector`。
-- **`siri` 只解决开关**。`VR start/stop` 能打开和关闭语音识别界面，但识别本身要麦克风：功能定制项里
-  我们报的是 `VOICE_MIC=0`（用车机麦克风），手机据此等 VR 通道上的 PCM，而我们不发（`vr ↑0`），
-  语音输入仍不通。要打通得改报 `VOICE_MIC=1`（用手机麦克风）或实现 VR 通道上行。
+- **`media` 3 不能使用 `KEYCODE_Media(0x09)`。** 该键值的含义是「进入手机端 CarLife 的音乐播放界面」，
+  按下只会切换界面（实测如此）；播放/暂停使用 `media start(0x1F)` / `media stop(0x20)`。上一首/下一首
+  使用 `seek sub/add`，开源车机端把 Android 的 `KEYCODE_MEDIA_PREVIOUS/NEXT` 映射到这两条
+  （`MediaButtonReceiver`），不使用 `selector`。
+- **`siri` 只覆盖开关。** `VR start/stop` 可打开与关闭语音识别界面，但识别本身需要麦克风：功能定制项中
+  上报的是 `VOICE_MIC=0`（使用车机麦克风），手机据此等待 VR 通道上的 PCM，而服务端不发送（`vr ↑0`），
+  语音输入仍不通。要打通需改报 `VOICE_MIC=1`（使用手机麦克风）或实现 VR 通道上行。
 
-前端的 contacts 只在手指按下期间存在：`pointerup` 把该触点从列表里直接删掉，而不是补发一条
-`down` 为假的记录（见 `input.ts` 的 `scheduleFlush`），所以抬手一定表现为「这个槽位在消息里
-消失了」。抬手事件本身不带坐标，只能沿用该槽位最后一次上报的位置。填原点等于告诉手机手指跳到了
-左上角，手机会把手势判为离开控件、取消这次按压，于是按钮按下与抬起的视觉都在、功能不生效。
-服务端因此记住每个触点最后发送的设备像素坐标，抬手时按原位置发 UP；拖动过的手指抬手也落在
-拖动后的位置。
+前端的 contacts 只在手指按下期间存在：`pointerup` 把该触点从列表中直接删除，而不是补发一条 `down`
+为假的记录（见 `input.ts` 的 `scheduleFlush`），因此抬手一定表现为该槽位在消息中消失。抬手事件本身
+不带坐标，只能沿用该槽位最后一次上报的位置；以原点填充会被手机解释为触点跳到左上角，从而把手势判定
+为离开控件并取消这次按压，表现为按钮按下与抬起的视觉都在、功能不生效。服务端因此记录每个触点最后
+发送的设备像素坐标，抬手时按原位置发送 UP；拖动过的手指抬手也落在拖动后的位置。
 
-音频流名走 wire 传到前端直接作为音量滑块标签，所以用英文 `Media` / `Navigation`。
+音频流名经 wire 传给前端并直接作为音量滑块标签，因此使用英文 `Media` / `Navigation`。
 
 ## 已知限制
 
 - 只实现有线（AOA）通路，无线 CarLife 未实现。
-- 触摸是单点，CarLife 协议本身不支持多指：前端的多点触点只有 id 最小的那个生效。
+- 触摸为单点，CarLife 协议本身不支持多指：前端的多点触点中只有 id 最小的那个生效。
 - 麦克风上行未接通：CarLife 的语音通道由手机发起，服务端不向浏览器请求麦克风。
 - 视频只有 H.264；音频按 16 位 PCM 处理。
 - 帧率由手机决定：请求 60 fps 时手机可能仍按 30 fps 编码，后端只能报告实测值。
-- 车机主动发起的鉴权（17.1）仍停用：一发就会被手机立刻判定未认证，比不问还糟，因为手机要校验
-  `encryptValue` 里的证书，开源库没有百度签发的证书。身份上报（17.2）已恢复，渠道号用开源车机端
-  的默认值；手机是否接受这个值只能上机验证。手机侧的认证判定要彻底过掉，只能拿到百度签发的真值、
-  逆向手机端 APK，或换用官方认证过的车机端实现。
-- 重新插拔要重建 `carlife-host`，`carlifed` 会自动做；`CL_SUPERVISE=0` 或手工单独运行时需自己重启。
-- 手机侧 CarLife App 是系统在 accessory 附着时拉起的，比链路就绪慢几秒。`carlifed`
-  每 5 秒重发一次协议版本直到会话建立，用来覆盖这段延迟；一直连不上手机时会持续重发。
+- 车机主动发起的鉴权（17.1）仍停用：发送后会被手机立即判定未认证，因为手机校验的是 `encryptValue`
+  中的证书，而开源库没有百度签发的证书。身份上报（17.2）已恢复，渠道号使用开源车机端的默认值，
+  手机是否接受该值只能上机验证。手机侧的认证判定要彻底通过，只能获取百度签发的真值、逆向手机端
+  APK，或改用官方认证过的车机端实现。
+- 重新插拔需要重建 `carlife-host`，`carlifed` 会自动处理；`CL_SUPERVISE=false` 或手工单独运行时需要
+  自行重启。
+- accessory 模式在手机侧粘性保留，在手动复位前无法通过重新握手拉起 CarLife App
+  （`adb shell svc usb setFunctions`，见「设备接入时机」）。
+- 手机侧 CarLife App 由系统在 accessory 附着时拉起，比链路就绪慢数秒。`carlifed` 每 5 秒重发一次
+  协议版本直到会话建立，用于覆盖这段延迟；一直无法连接手机时会持续重发。

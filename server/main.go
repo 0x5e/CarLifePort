@@ -285,15 +285,11 @@ func main() {
 
 	// The supervisor owns the two children, and this process must not exit before it has
 	// reaped them: exiting first orphans them, and an orphaned bridge keeps the USB device
-	// claimed. With CL_SUPERVISE=0 there are no children and the wait returns at once.
+	// claimed. With CL_SUPERVISE=false there are no children and the wait returns at once.
 	supervisorDone := make(chan struct{})
 	if cfg.supervise {
 		if err := checkSiblings(cfg); err != nil {
 			log.Fatal(err)
-		}
-		if err := preflight(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
 		}
 		go func() {
 			defer close(supervisorDone)
@@ -327,7 +323,7 @@ func main() {
 		log.Printf("  starting     %s", cfg.bridgePath)
 		log.Printf("               %s", cfg.hostPath)
 	} else {
-		log.Printf("  supervising  off (CL_SUPERVISE=0): the link has to be started by hand")
+		log.Printf("  supervising  off (CL_SUPERVISE=false): the link has to be started by hand")
 	}
 
 	var serveErr error

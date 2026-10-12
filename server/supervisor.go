@@ -37,8 +37,8 @@ func checkSiblings(cfg config) error {
 }
 
 // supervisor starts carlife-usb-bridge and carlife-host next to this binary and restarts
-// them together whenever either one exits. This is the job scripts/run.sh used to do; it
-// moved here so that starting a link is one process to start and one to stop.
+// them together whenever either one exits, so that starting a link is one process to start
+// and one to stop.
 //
 // The two are restarted as a pair because the link cannot be resumed in place:
 // CarLifeVehicleLib only establishes its six channels inside connectionSetup(), and the
@@ -148,8 +148,8 @@ func startChild(name, path string, args ...string) (*childProcess, error) {
 	return child, nil
 }
 
-// logChild prints every line a child writes with a [bridge] / [host] prefix, the way
-// run.sh did, so that the three processes stay distinguishable in one terminal.
+// logChild prints every line a child writes with a [bridge] / [host] prefix, so that the
+// three processes stay distinguishable in one terminal.
 func logChild(name string, output io.ReadCloser) {
 	defer output.Close()
 	reader := bufio.NewReader(output)
