@@ -765,6 +765,34 @@ static void* ctrl_receive_thread(void*)
 
 /* --------------------------------------------------------- Command dispatch */
 
+/* Names for the hard key codes, table 10.6-1 of the protocol guide. They are the identifiers
+   the protocol implementation uses for these codes (KEYCODE_* in the vehicle library and in
+   CommonParams.java on the phone side), so a log line can be matched against the vendor
+   sources. Which key is sent is decided by the backend; the codes are repeated here to give
+   them names. */
+static const char* hard_key_name(uint32_t keycode)
+{
+    switch (keycode) {
+    case 0x00000002: return "KEYCODE_PHONE_CALL";
+    case 0x00000003: return "KEYCODE_PHONE_END";
+    case 0x00000006: return "KEYCODE_SELECTOR_NEXT";
+    case 0x00000007: return "KEYCODE_SELECTOR_PREVIOUS";
+    case 0x0000000E: return "KEYCODE_BACK";
+    case 0x0000000F: return "KEYCODE_SEEK_SUB";
+    case 0x00000010: return "KEYCODE_SEEK_ADD";
+    case 0x00000013: return "KEYCODE_MUTE";
+    case 0x00000014: return "KEYCODE_OK";
+    case 0x00000015: return "KEYCODE_MOVE_LEFT";
+    case 0x00000016: return "KEYCODE_MOVE_RIGHT";
+    case 0x0000001E: return "KEYCODE_MAIN";
+    case 0x0000001F: return "KEYCODE_MEDIA_START";
+    case 0x00000020: return "KEYCODE_MEDIA_STOP";
+    case 0x00000021: return "KEYCODE_VR_START";
+    case 0x00000022: return "KEYCODE_VR_STOP";
+    default: return "unknown";
+    }
+}
+
 static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t length)
 {
     if (length < 1) {
@@ -927,7 +955,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_TOUCH_CAR_HARD_KEY_CODE key;
             key.keycode = get_be32(body);
             lib->ctrlTouchCarHardKeyCode(&key);
-            log_line("sending hard key 0x%08X", key.keycode);
+            log_line("sending hard key %s (0x%08X)", hard_key_name(key.keycode), key.keycode);
             break;
         }
         default:
