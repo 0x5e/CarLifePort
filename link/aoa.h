@@ -32,6 +32,7 @@ struct aoa_device {
     libusb_device_handle *handle;
     unsigned char ep_in;
     unsigned char ep_out;
+    unsigned short ep_in_max_packet; /* wMaxPacketSize of ep_in; bulk reads are aligned to it */
     int claimed;
     unsigned short vid;
     unsigned short pid;
@@ -86,7 +87,10 @@ void aoa_close(struct aoa_device *d);
 int aoa_send_message(struct aoa_device *d, unsigned int channel, const unsigned char *msg,
                      unsigned int len);
 
-/* Read exactly len bytes. Returns 0 on success, 1 if stop was requested, -1 on error. */
-int aoa_read_exact(struct aoa_device *d, unsigned char *dst, unsigned int len);
+/* Read from the bulk IN endpoint into dst, blocking until at least one byte arrives.
+ * cap must be at least one max-size packet; it is rounded down to a whole number of packets
+ * and capped at 16KB. Returns the number of bytes read (> 0), 1 if stop was requested,
+ * -1 on error. */
+int aoa_read_some(struct aoa_device *d, unsigned char *dst, unsigned int cap);
 
 #endif /* CARLIFE_AOA_H */

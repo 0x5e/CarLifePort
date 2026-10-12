@@ -470,22 +470,24 @@ int aoa_wait_accessory(int want_vid, int want_pid, struct aoa_device *out)
 /* accessory interface = class 0xff / subclass 0xff (the adb interface has subclass 0x42,
  * which is how they are told apart). The endpoint addresses vary with the configuration
  * (0x81/0x02 when accessory is alone, 0x81/0x01 when it coexists with adb), so they must be
- * read from the descriptors and cannot be hardcoded. */
-static int find_accessory_endpoints(libusb_device *dev, unsigned char *ep_in,
-                                    unsigned char *ep_out)
+ * read from the descriptors and cannot be hardcoded. The IN endpoint's max packet size is
+ * read for the same reason: reads have to be aligned to it (see aoa_read_some). */
+static int find_accessory_endpoints(libusb_device *dev, struct aoa_device *out)
 {
     struct libusb_config_descriptor *cfg = NULL;
     int i, j, found = 0;
 
-    *ep_in = 0;
-    *ep_out = 0;
+    out->ep_in = 0;
+    out->ep_out = 0;
+    out->ep_in_max_packet = 0;
     if (libusb_get_active_config_descriptor(dev, &cfg) != 0 || cfg == NULL) {
         return -1;
     }
     for (i = 0; i < cfg->bNumInterfaces && !found; i++) {
         const struct libusb_interface *itf = &cfg->interface[i];
         const struct libusb_interface_descriptor *alt;
-        unsigned char in = 0, out = 0;
+        unsigned char in_addr = 0, out_addr = 0;
+        unsigned short in_packet = 0;
 
         if (itf->num_altsetting <= 0) {
             continue;
@@ -501,14 +503,16 @@ static int find_accessory_endpoints(libusb_device *dev, unsigned char *ep_in,
                 continue;
             }
             if (ep->bEndpointAddress & 0x80) {
-                in = ep->bEndpointAddress;
+                in_addr = ep->bEndpointAddress;
+                in_packet = ep->wMaxPacketSize;
             } else {
-                out = ep->bEndpointAddress;
+                out_addr = ep->bEndpointAddress;
             }
         }
-        if (in != 0 && out != 0) {
-            *ep_in = in;
-            *ep_out = out;
+        if (in_addr != 0 && out_addr != 0 && in_packet != 0) {
+            out->ep_in = in_addr;
+            out->ep_out = out_addr;
+            out->ep_in_max_packet = in_packet;
             found = 1;
         }
     }
@@ -520,7 +524,7 @@ int aoa_claim_accessory(struct aoa_device *d)
 {
     int rc;
 
-    if (find_accessory_endpoints(libusb_get_device(d->handle), &d->ep_in, &d->ep_out) != 0) {
+    if (find_accessory_endpoints(libusb_get_device(d->handle), d) != 0) {
         aoa_log_error("no bulk endpoints found on the accessory interface (class 0xff / subclass 0xff)");
         return -1;
     }
@@ -604,23 +608,29 @@ int aoa_send_message(struct aoa_device *d, unsigned int channel, const unsigned 
     return 0;
 }
 
-int aoa_read_exact(struct aoa_device *d, unsigned char *dst, unsigned int len)
+/* Reads from the bulk IN endpoint. The request length is rounded down to a whole number of
+ * max-size packets: a bulk read whose buffer is not a whole number of packets can be overrun
+ * by the device, which libusb reports as LIBUSB_ERROR_OVERFLOW and macOS as kIOReturnOverrun
+ * ("packet too large or more data than buffer"), and which leaves the endpoint unusable. The
+ * device is free to send fewer bytes than requested, so callers must cope with any length.
+ * See libusb's "Packets and overflows". */
+int aoa_read_some(struct aoa_device *d, unsigned char *dst, unsigned int cap)
 {
-    unsigned int done = 0;
     unsigned int zero_reads = 0;
 
-    while (done < len) {
-        unsigned int want = len - done;
+    if (cap > BULK_CHUNK) {
+        cap = BULK_CHUNK;
+    }
+    cap -= cap % d->ep_in_max_packet;
+
+    for (;;) {
         int transferred = 0;
         int r;
 
         if (aoa_stop) {
             return 1;
         }
-        if (want > BULK_CHUNK) {
-            want = BULK_CHUNK;
-        }
-        r = libusb_bulk_transfer(d->handle, d->ep_in, dst + done, (int)want, &transferred,
+        r = libusb_bulk_transfer(d->handle, d->ep_in, dst, (int)cap, &transferred,
                                  BULK_TIMEOUT_MS);
         if (r == LIBUSB_ERROR_TIMEOUT) {
             continue; /* periodic timeout, let aoa_stop decide whether to exit */
@@ -629,17 +639,14 @@ int aoa_read_exact(struct aoa_device *d, unsigned char *dst, unsigned int len)
             aoa_log_error("USB read failed: %s %s", libusb_error_name(r), error_hint(r));
             return -1;
         }
-        if (transferred <= 0) {
-            /* The phone ends a transfer with a zero-length packet; that is not a link
-             * failure, so keep waiting instead of tearing the whole bridge down. */
-            if (++zero_reads >= MAX_ZERO_READS) {
-                aoa_log_error("USB read returned 0 bytes %u times in a row, giving up", zero_reads);
-                return -1;
-            }
-            continue;
+        if (transferred > 0) {
+            return transferred;
         }
-        zero_reads = 0;
-        done += (unsigned int)transferred;
+        /* The phone ends a transfer with a zero-length packet; that is not a link
+         * failure, so keep waiting instead of tearing the whole bridge down. */
+        if (++zero_reads >= MAX_ZERO_READS) {
+            aoa_log_error("USB read returned 0 bytes %u times in a row, giving up", zero_reads);
+            return -1;
+        }
     }
-    return 0;
 }

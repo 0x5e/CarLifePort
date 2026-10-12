@@ -386,14 +386,57 @@ static void *accept_loop(void *unused)
 
 /* ------------------------------------------------------------------ USB -> local */
 
+/* Receive side. The link is a byte stream, but a bulk read has to be a whole number of
+ * max-size packets (aoa_read_some), so one read can deliver more than the frame being
+ * parsed. The surplus stays here until the next frame asks for it. */
+struct rx_stream {
+    unsigned char *buf;
+    size_t cap;
+    unsigned int off; /* start of the frame being parsed */
+    unsigned int len; /* end of what has been received */
+};
+
+/* Buffer at least need bytes ahead of off, reading from USB as needed.
+ * Returns 0, 1 if stop was requested, -1 on error. */
+static int rx_fill(struct rx_stream *s, unsigned int need)
+{
+    unsigned int packet = g_dev.ep_in_max_packet;
+
+    if (s->off > 0) {
+        memmove(s->buf, s->buf + s->off, s->len - s->off);
+        s->len -= s->off;
+        s->off = 0;
+    }
+    while (s->len < need) {
+        unsigned int want = need - s->len;
+        int st;
+
+        if (want < packet) {
+            want = packet;
+        }
+        if (ensure_cap(&s->buf, &s->cap, (size_t)s->len + want) != 0) {
+            aoa_log_error("failed to allocate %u-byte receive buffer", s->len + want);
+            return -1;
+        }
+        st = aoa_read_some(&g_dev, s->buf + s->len, want);
+        if (st == 1) {
+            return 1;
+        }
+        if (st <= 0) {
+            return -1;
+        }
+        s->len += (unsigned int)st;
+    }
+    return 0;
+}
+
 static int usb_rx_loop(void)
 {
-    unsigned char aoa_head[AOA_HEAD_LEN];
-    unsigned char *buf = NULL;
-    size_t cap = 0;
+    struct rx_stream rx;
     time_t last_report = 0;
     unsigned long long last_tx = 0, last_rx = 0, last_drop = 0;
 
+    memset(&rx, 0, sizeof(rx));
     aoa_log("start forwarding (USB -> local / local -> USB), Ctrl-C to stop");
     if (!g_quiet) {
         time(&last_report);
@@ -401,38 +444,37 @@ static int usb_rx_loop(void)
 
     for (;;) {
         unsigned int ch_id, len, head_total;
+        const unsigned char *msg;
         struct channel *ch;
         int fd, st;
         unsigned long long tx_sum = 0, rx_sum = 0, drop_sum = 0;
         int i;
 
-        st = aoa_read_exact(&g_dev, aoa_head, AOA_HEAD_LEN);
+        st = rx_fill(&rx, AOA_HEAD_LEN);
         if (st == 1) {
             return 0;
         }
         if (st < 0) {
             return -1;
         }
-        ch_id = ((unsigned int)aoa_head[0] << 24) | ((unsigned int)aoa_head[1] << 16) |
-                ((unsigned int)aoa_head[2] << 8) | (unsigned int)aoa_head[3];
-        len = ((unsigned int)aoa_head[4] << 24) | ((unsigned int)aoa_head[5] << 16) |
-              ((unsigned int)aoa_head[6] << 8) | (unsigned int)aoa_head[7];
+        ch_id = ((unsigned int)rx.buf[0] << 24) | ((unsigned int)rx.buf[1] << 16) |
+                ((unsigned int)rx.buf[2] << 8) | (unsigned int)rx.buf[3];
+        len = ((unsigned int)rx.buf[4] << 24) | ((unsigned int)rx.buf[5] << 16) |
+              ((unsigned int)rx.buf[6] << 8) | (unsigned int)rx.buf[7];
         head_total = carlife_head_len(ch_id);
         if (ch_id < 1 || ch_id > AOA_CHANNEL_COUNT || len < head_total || len > AOA_MSG_MAX) {
             aoa_log_error("invalid AOA frame head: channel=%u totalLen=%u", ch_id, len);
             return -1;
         }
-        if (ensure_cap(&buf, &cap, len) != 0) {
-            aoa_log_error("failed to allocate %u-byte buffer", len);
-            return -1;
-        }
-        st = aoa_read_exact(&g_dev, buf, len);
+        st = rx_fill(&rx, AOA_HEAD_LEN + len);
         if (st == 1) {
             return 0;
         }
         if (st < 0) {
             return -1;
         }
+        msg = rx.buf + AOA_HEAD_LEN;
+        rx.off = AOA_HEAD_LEN + len;
 
         ch = &g_ch[ch_id];
         ch->tx_frames++;
@@ -445,7 +487,7 @@ static int usb_rx_loop(void)
             ch->dropped++;
             continue;
         }
-        if (write_socket_full(fd, buf, len) != 0) {
+        if (write_socket_full(fd, msg, len) != 0) {
             aoa_log_warn("%s: write to local socket failed, dropping this connection", ch->name);
             pthread_mutex_lock(&ch->lock);
             if (ch->client_fd == fd) {
