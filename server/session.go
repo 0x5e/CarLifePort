@@ -351,6 +351,11 @@ func (s *session) onCommandEvent(event linkEvent) {
 			infof(moduleSession, "phone authenticated this head unit")
 		} else {
 			warnf(moduleSession, "phone rejected this head unit; retrying authentication in %s", authenRetryInterval)
+			// A rejection leaves a "head unit not authorized" dialog on the phone that
+			// waits for a tap before CarLife can be used. Sending the home key dismisses
+			// that dialog, so a rejected session gets past it without anyone touching the
+			// phone. The rejection itself is unaffected; this only closes the dialog.
+			s.sendHardKey(keyMain)
 		}
 
 	case evFeatureConfigRequest:
