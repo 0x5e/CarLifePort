@@ -35,7 +35,6 @@
 #define BULK_CHUNK 16384
 
 #define RETRY_ACCESSORY_MODE 10
-#define RETRY_REBIND 10
 
 /* A zero-length bulk read is legal USB traffic (the phone emits zero-length packets
  * between transfers). Tolerate them, but stop waiting if they never end. */
@@ -441,50 +440,6 @@ int aoa_wait_accessory(int want_vid, int want_pid, struct aoa_device *out)
     }
     aoa_log("still not in accessory mode after %d retries", RETRY_ACCESSORY_MODE);
     return -1;
-}
-
-/* Wait for the original device node to disappear (USB re-enumeration complete).
- * VID:PID may be the same before and after, so it cannot distinguish the old and new
- * nodes; the criterion is "the same node no longer appears at the old bus address". */
-static void wait_rebind(unsigned short vid, unsigned short pid, unsigned char old_addr)
-{
-    int i;
-
-    for (i = 0; i < RETRY_REBIND; i++) {
-        libusb_device **list = NULL;
-        ssize_t n, k;
-        int still_there = 0;
-
-        if (aoa_stop) {
-            return;
-        }
-        n = libusb_get_device_list(g_ctx, &list);
-        for (k = 0; k < n; k++) {
-            struct libusb_device_descriptor d;
-
-            if (libusb_get_device_descriptor(list[k], &d) != 0) {
-                continue;
-            }
-            if (d.idVendor == vid && d.idProduct == pid &&
-                libusb_get_device_address(list[k]) == old_addr) {
-                still_there = 1;
-                break;
-            }
-        }
-        libusb_free_device_list(list, 1);
-        if (!still_there) {
-            aoa_log("  original device node is gone (check %d)", i + 1);
-            return;
-        }
-        sleep(1);
-    }
-    aoa_log("  warning: no re-enumeration within %d s, continuing anyway", RETRY_REBIND);
-}
-
-int aoa_wait_rebind(const struct aoa_device *prev)
-{
-    wait_rebind(prev->vid, prev->pid, prev->address);
-    return 0;
 }
 
 /* ------------------------------------------------------------------ endpoints */

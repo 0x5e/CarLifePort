@@ -1,22 +1,13 @@
 #!/usr/bin/env bash
 #
-# Build every CarLifePort component.
+# Build every CarLifePort component into dist/.
 #
-#   ./scripts/build.sh            incremental build
-#   ./scripts/build.sh --force    rebuild the native library as well
-#   ./scripts/build.sh --native   build only the native library (host/Makefile uses this)
+#   ./scripts/build.sh
 #
+# There are no options and no partial modes: the native library, the link, the Go backend
+# and the web frontend are all built in one run, and the native library is built every
+# time rather than kept from an earlier run.
 set -euo pipefail
-
-FORCE=0
-NATIVE_ONLY=0
-for arg in "$@"; do
-    case "$arg" in
-        --force) FORCE=1 ;;
-        --native) NATIVE_ONLY=1 ;;
-        *) echo "unknown argument: $arg" >&2; exit 2 ;;
-    esac
-done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -25,6 +16,7 @@ cd "$ROOT"
 # process it starts and the web assets right next to itself (see server/main.go).
 # .build/ holds the intermediates (protobuf, object files) and never gets run from.
 DIST="$ROOT/dist"
+BUILD="$ROOT/.build"
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 
@@ -32,11 +24,9 @@ step() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 # macOS (aarch64) native dependencies:
 #   1. protobuf 2.5.0 static library (serialization dependency of CarLifeVehicleLib)
 #   2. libcarlifevehicle.dylib (CarLife head-unit protocol stack)
-# Sources and artifacts land in .build/ and are not tracked by git. Building the
-# library is idempotent: an existing dylib is kept unless --force is given.
-step "1/4 native library (protobuf 2.5.0 + libcarlifevehicle.dylib)"
+# Sources and artifacts land in .build/ and are not tracked by git.
+step "native library (protobuf 2.5.0 + libcarlifevehicle.dylib)"
 
-BUILD="$ROOT/.build"
 PB_SRC="$BUILD/protobuf-2.5.0"
 PB_PREFIX="$BUILD/pb"
 LIB_SRC="$ROOT/vendor/carlife/CarLife-Vehicle-Lib/LibSource"
@@ -70,6 +60,8 @@ if '__aarch64__' not in source:
     print("== patched protobuf platform macros for arm64")
 PY
 
+# The static library is a patched upstream tarball that does not change between builds,
+# so it is built once; everything else below is rebuilt on every run.
 if [ ! -f "$PB_PREFIX/lib/libprotobuf.a" ]; then
     echo "== building protobuf (logs: .build/protobuf-*.log)"
     (
@@ -96,59 +88,50 @@ fi
 echo "== protobuf ready: $PB_PREFIX/lib/libprotobuf.a"
 
 # ------------------------------------------------------- libcarlifevehicle
-if [ -f "$LIB_OUT/libcarlifevehicle.dylib" ] && [ "$FORCE" != 1 ]; then
-    echo "== libcarlifevehicle already built, skipping (--force rebuilds it)"
-    ls -lh "$LIB_OUT/libcarlifevehicle.dylib"
-else
-    INCLUDES=(
-        -I"$LIB_SRC/include"
-        -I"$LIB_SRC/protobuf/cc/include"
-        -I"$PB_PREFIX/include"
-        -I"$PB_PREFIX/include/google/protobuf"
-        -I"$PB_PREFIX/include/google/protobuf/io"
-    )
+INCLUDES=(
+    -I"$LIB_SRC/include"
+    -I"$LIB_SRC/protobuf/cc/include"
+    -I"$PB_PREFIX/include"
+    -I"$PB_PREFIX/include/google/protobuf"
+    -I"$PB_PREFIX/include/google/protobuf/io"
+)
 
-    OBJ_DIR="$BUILD/obj"
-    rm -rf "$OBJ_DIR" && mkdir -p "$OBJ_DIR"
-    OBJECTS=()
-    while IFS= read -r src; do
-        [ -n "$src" ] || continue
-        base="${src#"$LIB_SRC"/}"
-        name="${base//\//_}"
-        name="${name%.cpp}"
-        name="${name%.cc}"
-        obj="$OBJ_DIR/$name.o"
-        clang++ -std=gnu++98 -O2 -w -fPIC -c "${INCLUDES[@]}" "$src" -o "$obj"
-        OBJECTS+=("$obj")
-    done < <(
-        find "$LIB_SRC/core" "$LIB_SRC/libwrapper" "$LIB_SRC/modules" \
-             "$LIB_SRC/utility" "$LIB_SRC/protobuf/cc/src" \
-             \( -name '*.cpp' -o -name '*.cc' \) | sort
-    )
-    echo "== compiled ${#OBJECTS[@]} source files"
+OBJ_DIR="$BUILD/obj"
+rm -rf "$OBJ_DIR" && mkdir -p "$OBJ_DIR"
+OBJECTS=()
+while IFS= read -r src; do
+    [ -n "$src" ] || continue
+    base="${src#"$LIB_SRC"/}"
+    name="${base//\//_}"
+    name="${name%.cpp}"
+    name="${name%.cc}"
+    obj="$OBJ_DIR/$name.o"
+    clang++ -std=gnu++98 -O2 -w -fPIC -c "${INCLUDES[@]}" "$src" -o "$obj"
+    OBJECTS+=("$obj")
+done < <(
+    find "$LIB_SRC/core" "$LIB_SRC/libwrapper" "$LIB_SRC/modules" \
+         "$LIB_SRC/utility" "$LIB_SRC/protobuf/cc/src" \
+         \( -name '*.cpp' -o -name '*.cc' \) | sort
+)
+echo "== compiled ${#OBJECTS[@]} source files"
 
-    # @rpath install name + @loader_path rpath in link/Makefile: carlife-link resolves the
-    # library next to itself, so dist/ can be copied or moved as a whole. Without this the
-    # linker would record the absolute build path of the dylib.
-    clang++ -dynamiclib -install_name @rpath/libcarlifevehicle.dylib \
-        -o "$LIB_OUT/libcarlifevehicle.dylib" "${OBJECTS[@]}" \
-        -L"$PB_PREFIX/lib" -lprotobuf -lpthread
-    echo "== linked: $LIB_OUT/libcarlifevehicle.dylib"
-    ls -lh "$LIB_OUT/libcarlifevehicle.dylib"
-fi
-
-if [ "$NATIVE_ONLY" = 1 ]; then
-    exit 0
-fi
+# @rpath install name + @loader_path rpath in link/Makefile: carlife-link resolves the
+# library next to itself, so dist/ can be copied or moved as a whole. Without this the
+# linker would record the absolute build path of the dylib.
+clang++ -dynamiclib -install_name @rpath/libcarlifevehicle.dylib \
+    -o "$LIB_OUT/libcarlifevehicle.dylib" "${OBJECTS[@]}" \
+    -L"$PB_PREFIX/lib" -lprotobuf -lpthread
+echo "== linked: $LIB_OUT/libcarlifevehicle.dylib"
+ls -lh "$LIB_OUT/libcarlifevehicle.dylib"
 
 # ------------------------------------------------------------------- others
-step "2/4 link (USB transport + protocol stack)"
+step "link (USB transport + protocol stack)"
 make -C link
 
-step "3/4 Go backend"
+step "Go backend"
 (cd server && go build -o "$DIST/carlifed" .)
 
-step "4/4 web frontend (vendor/playport, built unmodified)"
+step "web frontend (vendor/playport, built unmodified)"
 CLIENT="vendor/playport/web"
 if [ ! -d "$CLIENT/node_modules" ]; then
     echo "first build, installing web dependencies..."

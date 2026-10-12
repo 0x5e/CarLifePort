@@ -1113,14 +1113,12 @@ static void usage(const char* program)
             "  --host <address>   local address of the six channel ports (default 127.0.0.1)\n"
             "  --vid <0xXXXX>     target device VID (default: pick a phone)\n"
             "  --pid <0xXXXX>     target device PID (default: pick a phone)\n"
-            "  --force-handshake  resend 51/52/53 even if the phone is already in accessory mode\n"
             "  --list             list the USB devices and exit, without touching any device\n"
-            "  --usb-only         run the USB transport without the protocol stack\n"
             "  -q, --quiet        do not print this process's runtime logs\n"
             "  -v, --verbose      also emit the protocol stack's internal logs (discarded by default)\n"
             "  -h, --help         show this help\n"
             "\n"
-            "The three required options are not needed by --list or --usb-only.\n",
+            "The three required options are not needed by --list.\n",
             program);
 }
 
@@ -1130,9 +1128,7 @@ int main(int argc, char** argv)
     const char* channel_host = "127.0.0.1";
     int vid = -1;
     int pid = -1;
-    int force_handshake = 0;
     int list_only = 0;
-    int usb_only = 0;
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
@@ -1147,12 +1143,8 @@ int main(int argc, char** argv)
             vid = (int)strtol(argv[++i], NULL, 0);
         } else if (strcmp(argv[i], "--pid") == 0 && i + 1 < argc) {
             pid = (int)strtol(argv[++i], NULL, 0);
-        } else if (strcmp(argv[i], "--force-handshake") == 0) {
-            force_handshake = 1;
         } else if (strcmp(argv[i], "--list") == 0) {
             list_only = 1;
-        } else if (strcmp(argv[i], "--usb-only") == 0) {
-            usb_only = 1;
         } else if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
             g_quiet = 1;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -1169,9 +1161,9 @@ int main(int argc, char** argv)
 
     /* The Go backend owns these values and always passes them, so this process carries no
      * defaults of its own: a missing one would otherwise silently run with an identity
-     * nobody configured. The two standalone modes below never reach the protocol stack and
-     * do not need them. */
-    if (!list_only && !usb_only) {
+     * nobody configured. The device listing mode below never reaches the protocol stack
+     * and does not need them. */
+    if (!list_only) {
         const char* missing = NULL;
         if (socket_path == NULL) {
             missing = "--socket";
@@ -1205,13 +1197,8 @@ int main(int argc, char** argv)
     /* The transport half comes first: its six ports have to exist before the library
      * connects, and it waits here until a phone is plugged in. bridge_start() also
      * installs the SIGINT/SIGTERM handler that stops both halves. */
-    if (bridge_start(channel_host, vid, pid, force_handshake, g_quiet) != 0) {
+    if (bridge_start(channel_host, vid, pid, g_quiet) != 0) {
         return 1;
-    }
-    if (usb_only) {
-        int rc = bridge_loop();
-        bridge_shutdown();
-        return rc == 0 ? 0 : 1;
     }
 
     g_listen_fd = listen_unix(socket_path);

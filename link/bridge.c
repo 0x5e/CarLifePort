@@ -558,7 +558,7 @@ static void on_signal(int sig)
  * list; later attempts are throttled to one line per 10 s.
  *
  * Returns 0 with *out claimed and open, or -1 if a stop was requested. */
-static int acquire_device(int vid, int pid, int force_handshake, struct aoa_device *out)
+static int acquire_device(int vid, int pid, struct aoa_device *out)
 {
     unsigned int attempt = 0;
 
@@ -582,26 +582,17 @@ static int acquire_device(int vid, int pid, int force_handshake, struct aoa_devi
         aoa_log("found %04x:%04x%s", dev.vid, dev.pid,
                 is_accessory ? "  [already in accessory mode]" : "  [normal mode]");
 
-        if (is_accessory && !force_handshake) {
+        if (is_accessory) {
             aoa_log("  already in accessory mode, skipping 51/52/53");
             aoa_log("  note: the phone keeps an accessory session across a replug, so the CarLife app");
             aoa_log("  may still be attached to the previous one. If no traffic appears, clear the mode");
-            aoa_log("  (adb shell svc usb setFunctions) and replug, or pass --force-handshake.");
+            aoa_log("  (adb shell svc usb setFunctions) and replug.");
         } else {
-            struct aoa_device prev = dev;
-
-            if (force_handshake && is_accessory) {
-                aoa_log("  --force-handshake: resending 51/52/53 to overwrite the descriptor "
-                        "stored on the phone");
-            }
             if (aoa_handshake(&dev, 1) != 0) {
                 aoa_close(&dev);
                 goto retry;
             }
             aoa_close(&dev);
-            if (is_accessory) {
-                aoa_wait_rebind(&prev);
-            }
             if (aoa_wait_accessory(vid, pid, &dev) != 0) {
                 aoa_log("  51/52/53 were accepted, but the device did not reappear in accessory mode");
                 goto retry;
@@ -661,7 +652,7 @@ int bridge_list_devices(void)
     return 0;
 }
 
-int bridge_start(const char *host, int vid, int pid, int force_handshake, int quiet)
+int bridge_start(const char *host, int vid, int pid, int quiet)
 {
     pthread_t tid;
 
@@ -679,7 +670,7 @@ int bridge_start(const char *host, int vid, int pid, int force_handshake, int qu
     }
 
     aoa_log("== 1. waiting for a phone ==");
-    if (acquire_device(vid, pid, force_handshake, &g_dev) != 0) {
+    if (acquire_device(vid, pid, &g_dev) != 0) {
         aoa_fini();
         return 1;
     }

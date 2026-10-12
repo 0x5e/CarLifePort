@@ -45,10 +45,11 @@ TCP 通道——与库自身在 ADB 模式下使用的方式一致：
 ## 构建
 
 ```sh
-./scripts/build.sh          # 全部构建；已存在的原生库自动跳过
-./scripts/build.sh --force  # 原生库一并重建
-./scripts/build.sh --native # 只构建原生库（link/Makefile 内部调用）
+./scripts/build.sh   # 构建全部组件
 ```
+
+`build.sh` 没有参数，也没有部分构建模式：原生库、链接进程、Go 后端与前端在一次运行内全部重建，
+不复用上一次的结果。
 
 按顺序构建四段。可运行产物全部在 `dist/`，中间产物在 `.build/`，两者都不进入版本库：
 
@@ -63,9 +64,9 @@ TCP 通道——与库自身在 ADB 模式下使用的方式一致：
 可以移动到其他位置运行。原生库使用 `@rpath` 安装名，链接进程使用 `@loader_path` rpath 定位同级
 目录中的 dylib，二进制中不包含构建路径。
 
-原生库需要编译 protobuf 与 69 个 C++ 源文件，首次构建需数分钟，产物已存在时跳过。
-`build.sh` 为 protobuf 2.5.0 打一个 3 行补丁（补充 `__aarch64__` 分支，上游版本不支持
-Apple Silicon），其余源文件原样编译。
+原生库需要编译 protobuf 与 69 个 C++ 源文件，每次运行都重新编译。其中 protobuf 只在首次构建时
+编译并打进 `.build/pb`，它是打了补丁的上游源码包、不随本仓库改动；补丁内容为 3 行，给
+`platform_macros.h` 补上 `__aarch64__` 分支（上游版本不支持 Apple Silicon），其余源文件原样编译。
 
 ## 运行
 
@@ -133,14 +134,12 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 | `--cuid <id>` | 无（必填） | 上报给手机的车机 id |
 | `--host <address>` | `127.0.0.1` | 六条本地通道端口的监听地址 |
 | `--vid` / `--pid` | 自动挑选 | 指定目标设备的 VID / PID |
-| `--force-handshake` | 关 | 已处于 accessory 模式时仍重发 51/52/53 |
 | `--list` | 关 | 只枚举 USB 设备，不操作任何设备 |
-| `--usb-only` | 关 | 只运行 USB 传输，不启动协议栈 |
 | `-q` / `--quiet` | 关 | 不打印运行日志与周期性的转发统计 |
 | `-v` / `--verbose` | 关 | 额外输出协议栈内部日志（默认丢弃） |
 
 三个必填参数的默认值只存在于 `carlifed`（`CL_CHANNEL` / `CL_CUID`，socket 路径是内部常量），
-链接进程不重复定义；缺任一个都会直接报错退出，`--list` 与 `--usb-only` 不需要它们。
+链接进程不重复定义；缺任一个都会直接报错退出，`--list` 不需要它们。
 
 周期性的转发统计默认打印但标记为 debug，由 `carlifed` 按级别过滤。
 
@@ -221,7 +220,6 @@ socket，进程退出后 socket 仍被持有，`carlifed` 会连接到一个无�
 
 ```sh
 dist/carlife-link --list      # 只枚举 USB 设备，不操作任何设备
-dist/carlife-link --usb-only  # 只运行 USB 传输，不启动协议栈
 dist/carlife-link --socket /tmp/carlife-link.sock --channel 20000000 --cuid CarLifePort
                               # 完整的链接进程；三个参数必填，取值即 carlifed 的默认值
 dist/carlife-link --socket /tmp/carlife-link.sock --channel 20000000 --cuid CarLifePort -v

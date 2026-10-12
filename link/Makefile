@@ -1,7 +1,9 @@
 # carlife-link -- the phone link: USB(AOA) transport + CarLife head-unit protocol stack
 #
-# Depends on libcarlifevehicle.dylib produced by scripts/build.sh --native, and triggers a
-# build automatically if it is not present yet.
+# Links against libcarlifevehicle.dylib, which scripts/build.sh produces (and rebuilds) as
+# part of the full build. The check below only reports when it is missing; building it from
+# here would mean running the whole build from inside itself, and the library is built from
+# the vendored sources, so it never changes while this link does not.
 #
 # The transport half (aoa.c, bridge.c) is C and needs libusb; the protocol stack half
 # (main.cpp) is C++ and needs the CarLife headers. Only main.cpp is compiled as C++, but the
@@ -45,7 +47,8 @@ main.o: main.cpp protocol.h bridge.h
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 native $(DIST)/libcarlifevehicle.dylib:
-	@test -f $(DIST)/libcarlifevehicle.dylib || $(ROOT)/scripts/build.sh --native
+	@test -f $(DIST)/libcarlifevehicle.dylib || \
+	  { echo "$(DIST)/libcarlifevehicle.dylib is missing, run ./scripts/build.sh first" >&2; exit 1; }
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)

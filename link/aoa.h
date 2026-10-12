@@ -65,10 +65,6 @@ int aoa_handshake(struct aoa_device *d, int do_start);
 /* Wait for the device to re-enumerate in accessory mode and open it. Returns 0 on success. */
 int aoa_wait_accessory(int want_vid, int want_pid, struct aoa_device *out);
 
-/* Wait for the node described by prev to complete its USB re-enumeration
- * (called after 53 has been sent). */
-int aoa_wait_rebind(const struct aoa_device *prev);
-
 /* Find the bulk endpoints on the accessory interface (class 0xff / subclass 0xff) and claim it. */
 int aoa_claim_accessory(struct aoa_device *d);
 
