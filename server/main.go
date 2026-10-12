@@ -179,8 +179,9 @@ path defaults to a file next to this binary, which is where the Makefile puts it
   CL_CHANNEL       20000000                vendor channel number reported to the phone
   CL_CUID          CarLifePort             head unit id reported to the phone
   CL_LOG_LEVEL     info                    debug, info, warn or error; debug adds the
-                                           per-frame telemetry and the link's periodic
-                                           per-channel statistics
+                                           per-frame telemetry, the link's periodic
+                                           per-channel statistics, and the link's copy of
+                                           the events this process already reports
   CL_LINK          <binary dir>/carlife-link         the link to start
 
 CL_WEB and CL_LINK are used as given, relative paths included.

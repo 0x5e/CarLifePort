@@ -46,6 +46,15 @@ void aoa_log(const char *fmt, ...);
  * unless it runs at debug level. Use it for periodic statistics, not for events. */
 void aoa_log_debug(const char *fmt, ...);
 
+/* Same, marked warn: something did not work but the link keeps running. See
+ * aoa_log_error for the failures that stop it. */
+void aoa_log_warn(const char *fmt, ...);
+
+/* Same, marked error: the operation was abandoned or the link cannot continue. The marker
+ * is what puts the line in the backend's error column, so any failure that is not going to
+ * be retried has to use this one. */
+void aoa_log_error(const char *fmt, ...);
+
 int aoa_init(void);
 void aoa_fini(void);
 

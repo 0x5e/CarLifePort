@@ -102,7 +102,7 @@ static void wait_threads(int timeout_ms)
         waited += 50;
     }
     if (g_busy_threads > 0) {
-        aoa_log("still %d worker thread(s) not exited, continuing shutdown", g_busy_threads);
+        aoa_log_warn("still %d worker thread(s) not exited, continuing shutdown", g_busy_threads);
     }
 }
 
@@ -248,14 +248,14 @@ static void *channel_rx(void *param)
         }
         body = carlife_body_len(ch->id, head);
         if (body > carlife_max_body(ch->id)) {
-            aoa_log("%s: message body length %u exceeds the cap %u, dropping this connection", ch->name, body,
+            aoa_log_warn("%s: message body length %u exceeds the cap %u, dropping this connection", ch->name, body,
                     carlife_max_body(ch->id));
             report_disconnect = 0;
             break;
         }
         need = head_len + body;
         if (ensure_cap(&buf, &cap, need != 0 ? need : 1) != 0) {
-            aoa_log("%s: failed to allocate %u-byte buffer", ch->name, need);
+            aoa_log_error("%s: failed to allocate %u-byte buffer", ch->name, need);
             report_disconnect = 0;
             break;
         }
@@ -268,7 +268,7 @@ static void *channel_rx(void *param)
         r = aoa_send_message(&g_dev, ch->id, buf, need);
         pthread_mutex_unlock(&g_usb_tx_lock);
         if (r != 0) {
-            aoa_log("%s: send to USB failed: %s", ch->name, libusb_error_name(r));
+            aoa_log_error("%s: send to USB failed: %s", ch->name, libusb_error_name(r));
             report_disconnect = 0;
             aoa_stop = 1;
             break;
@@ -327,7 +327,7 @@ static void accept_one(struct channel *ch)
 
     arg = (struct rx_arg *)malloc(sizeof(*arg));
     if (arg == NULL) {
-        aoa_log("%s: failed to allocate thread argument", ch->name);
+        aoa_log_error("%s: failed to allocate thread argument", ch->name);
         pthread_mutex_lock(&ch->lock);
         ch->client_fd = -1;
         ch->peer[0] = '\0';
@@ -338,7 +338,7 @@ static void accept_one(struct channel *ch)
     arg->ch = ch;
     arg->fd = fd;
     if (pthread_create(&tid, NULL, channel_rx, arg) != 0) {
-        aoa_log("%s: failed to create receive thread", ch->name);
+        aoa_log_error("%s: failed to create receive thread", ch->name);
         pthread_mutex_lock(&ch->lock);
         ch->client_fd = -1;
         ch->peer[0] = '\0';
@@ -419,11 +419,11 @@ static int usb_rx_loop(void)
               ((unsigned int)aoa_head[6] << 8) | (unsigned int)aoa_head[7];
         head_total = carlife_head_len(ch_id);
         if (ch_id < 1 || ch_id > AOA_CHANNEL_COUNT || len < head_total || len > AOA_MSG_MAX) {
-            aoa_log("invalid AOA frame head: channel=%u totalLen=%u", ch_id, len);
+            aoa_log_error("invalid AOA frame head: channel=%u totalLen=%u", ch_id, len);
             return -1;
         }
         if (ensure_cap(&buf, &cap, len) != 0) {
-            aoa_log("failed to allocate %u-byte buffer", len);
+            aoa_log_error("failed to allocate %u-byte buffer", len);
             return -1;
         }
         st = aoa_read_exact(&g_dev, buf, len);
@@ -446,7 +446,7 @@ static int usb_rx_loop(void)
             continue;
         }
         if (write_socket_full(fd, buf, len) != 0) {
-            aoa_log("%s: write to local socket failed, dropping this connection", ch->name);
+            aoa_log_warn("%s: write to local socket failed, dropping this connection", ch->name);
             pthread_mutex_lock(&ch->lock);
             if (ch->client_fd == fd) {
                 shutdown(fd, SHUT_RDWR);
@@ -496,7 +496,7 @@ static int setup_listeners(const char *host)
 
         fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) {
-            aoa_log("%s: socket creation failed: %s", ch->name, strerror(errno));
+            aoa_log_error("%s: socket creation failed: %s", ch->name, strerror(errno));
             return -1;
         }
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -504,17 +504,17 @@ static int setup_listeners(const char *host)
         sa.sin_family = AF_INET;
         sa.sin_port = htons(ch->port);
         if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
-            aoa_log("invalid listen address: %s", host);
+            aoa_log_error("invalid listen address: %s", host);
             close(fd);
             return -1;
         }
         if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
-            aoa_log("%s: bind %s:%u failed: %s", ch->name, host, ch->port, strerror(errno));
+            aoa_log_error("%s: bind %s:%u failed: %s", ch->name, host, ch->port, strerror(errno));
             close(fd);
             return -1;
         }
         if (listen(fd, 1) != 0) {
-            aoa_log("%s: listen failed: %s", ch->name, strerror(errno));
+            aoa_log_error("%s: listen failed: %s", ch->name, strerror(errno));
             close(fd);
             return -1;
         }
@@ -601,7 +601,7 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
             }
             aoa_close(&dev);
             if (aoa_wait_accessory(vid, pid, &dev) != 0) {
-                aoa_log("  51/52/53 were accepted, but the device did not reappear in accessory mode");
+                aoa_log_warn("  51/52/53 were accepted, but the device did not reappear in accessory mode");
                 goto retry;
             }
         }
@@ -618,7 +618,7 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
         /* Only a device that was found but could not be used gets this line; with nothing
          * plugged in, the line above already said what is missing. */
         if (device_seen && !not_ready_logged) {
-            aoa_log("device not ready, retrying");
+            aoa_log_warn("device not ready, retrying");
             not_ready_logged = 1;
         }
         sleep(1);
@@ -694,7 +694,7 @@ int bridge_start(const char *host, int vid, int pid, int quiet)
     }
 
     if (pthread_create(&tid, NULL, accept_loop, NULL) != 0) {
-        aoa_log("failed to create accept thread");
+        aoa_log_error("failed to create accept thread");
         shutdown_listeners();
         aoa_close(&g_dev);
         aoa_fini();
@@ -711,7 +711,7 @@ int bridge_loop(void)
     int rc = usb_rx_loop();
 
     if (rc != 0) {
-        aoa_log("USB receive loop ended (error)");
+        aoa_log_error("USB receive loop ended (error)");
     } else {
         aoa_log("USB receive loop ended (clean exit)");
     }

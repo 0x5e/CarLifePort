@@ -181,7 +181,7 @@ func (s *session) sessionWatchdog(ctx context.Context) {
 		// retryAuthen := s.linkReady && !s.authenDone && time.Since(s.lastAuthenTry) >= authenRetryInterval
 		s.mu.Unlock()
 		if stalled {
-			infof(moduleSession, "no CarLife session yet (idle %s), resending protocol version", idle.Truncate(time.Second))
+			warnf(moduleSession, "no CarLife session yet (idle %s), resending protocol version", idle.Truncate(time.Second))
 			s.startHandshake()
 		}
 		// if retryAuthen {
@@ -294,7 +294,7 @@ func (s *session) onCommandEvent(event linkEvent) {
 		s.mu.Unlock()
 		infof(moduleSession, "phone ready, video %dx%d@%d, starting encoder", width, height, fps)
 		if fps > 0 && fps < requestedFPS {
-			infof(moduleSession, "phone limited the frame rate to %d fps (requested %d)", fps, requestedFPS)
+			warnf(moduleSession, "phone limited the frame rate to %d fps (requested %d)", fps, requestedFPS)
 		}
 		if err := s.link.sendVideoEncoderStart(); err != nil {
 			errorf(moduleSession, "failed to start video encoder: %v", err)

@@ -51,9 +51,10 @@ static const char *const kIdent[6] = {
 
 static libusb_context *g_ctx = NULL;
 
-/* Shared body of aoa_log and aoa_log_debug. Callers that pass a level get it written
- * right after the timestamp, which is where the Go backend looks for it when it relays
- * these lines: a marked line is dropped unless the backend runs at debug level. */
+/* Shared body of the aoa_log* functions. The level marker is written right after the
+ * timestamp, which is where the Go backend looks for it when it relays these lines: it
+ * becomes the line's level in the backend's own level column, and a line marked DEBUG is
+ * dropped unless the backend runs at debug level. No marker means info. */
 static void aoa_vlog(const char *level, const char *fmt, va_list ap)
 {
     char ts[16];
@@ -92,6 +93,28 @@ void aoa_log_debug(const char *fmt, ...)
 
     va_start(ap, fmt);
     aoa_vlog("DEBUG", fmt, ap);
+    va_end(ap);
+}
+
+/* Something did not work but the link keeps running: a step of the device bring-up that
+ * will be retried, a frame or a connection that had to be dropped. */
+void aoa_log_warn(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    aoa_vlog("WARN", fmt, ap);
+    va_end(ap);
+}
+
+/* A failure: the operation was abandoned, or the link cannot continue and is about to be
+ * rebuilt by the backend. */
+void aoa_log_error(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    aoa_vlog("ERROR", fmt, ap);
     va_end(ap);
 }
 
@@ -192,7 +215,7 @@ int aoa_init(void)
 {
     int rc = libusb_init(&g_ctx);
     if (rc != 0) {
-        aoa_log("libusb_init failed: %s", libusb_error_name(rc));
+        aoa_log_error("libusb_init failed: %s", libusb_error_name(rc));
         g_ctx = NULL;
         return -1;
     }
@@ -217,7 +240,7 @@ void aoa_list_devices(void)
     }
     n = libusb_get_device_list(g_ctx, &list);
     if (n < 0) {
-        aoa_log("failed to enumerate USB devices: %s", libusb_error_name((int)n));
+        aoa_log_error("failed to enumerate USB devices: %s", libusb_error_name((int)n));
         return;
     }
     for (i = 0; i < n; i++) {
@@ -275,7 +298,7 @@ static int pick_and_open(int want_vid, int want_pid, struct aoa_device *out, int
     }
     n = libusb_get_device_list(g_ctx, &list);
     if (n < 0) {
-        aoa_log("failed to enumerate USB devices: %s", libusb_error_name((int)n));
+        aoa_log_error("failed to enumerate USB devices: %s", libusb_error_name((int)n));
         return -1;
     }
 
@@ -362,13 +385,13 @@ static int handshake_transfers(libusb_device_handle *h, int do_start)
     r = libusb_control_transfer(h, REQ_TYPE_IN_VENDOR, AOA_GET_PROTOCOL, 0, 0, ver, 2,
                                 EP0_TIMEOUT_MS);
     if (r < 0) {
-        aoa_log("  51 GET_PROTOCOL failed: %s %s", libusb_error_name(r), error_hint(r));
+        aoa_log_warn("  51 GET_PROTOCOL failed: %s %s", libusb_error_name(r), error_hint(r));
         return -1;
     }
     version = ((unsigned int)ver[1] << 8) | (unsigned int)ver[0];
     aoa_log("  51 GET_PROTOCOL  OK   device reports AOA version = %u", version);
     if (version < 1 || version > 2) {
-        aoa_log("  device does not support AOA 1.0/2.0, cannot continue");
+        aoa_log_warn("  device does not support AOA 1.0/2.0, cannot continue");
         return -1;
     }
 
@@ -380,7 +403,7 @@ static int handshake_transfers(libusb_device_handle *h, int do_start)
         r = libusb_control_transfer(h, REQ_TYPE_OUT_VENDOR, AOA_SEND_IDENT, 0, (unsigned short)i,
                                     sbuf, (unsigned short)len, EP0_TIMEOUT_MS);
         if (r < 0) {
-            aoa_log("  52 SEND_IDENT[index=%d] failed: %s %s", i, libusb_error_name(r), error_hint(r));
+            aoa_log_warn("  52 SEND_IDENT[index=%d] failed: %s %s", i, libusb_error_name(r), error_hint(r));
             return -1;
         }
     }
@@ -394,7 +417,7 @@ static int handshake_transfers(libusb_device_handle *h, int do_start)
     r = libusb_control_transfer(h, REQ_TYPE_OUT_VENDOR, AOA_START_ACCESSORY, 0, 0, NULL, 0,
                                 EP0_TIMEOUT_MS);
     if (r < 0) {
-        aoa_log("  53 START_ACCESSORY failed: %s %s", libusb_error_name(r), error_hint(r));
+        aoa_log_warn("  53 START_ACCESSORY failed: %s %s", libusb_error_name(r), error_hint(r));
         return -1;
     }
     aoa_log("  53 START_ACCESSORY OK   USB will re-enumerate, waiting...");
@@ -406,7 +429,7 @@ int aoa_handshake(struct aoa_device *d, int do_start)
     int rc = libusb_claim_interface(d->handle, 0);
 
     if (rc != 0) {
-        aoa_log("failed to claim interface 0: %s %s", libusb_error_name(rc), error_hint(rc));
+        aoa_log_warn("failed to claim interface 0: %s %s", libusb_error_name(rc), error_hint(rc));
         return -1;
     }
     rc = handshake_transfers(d->handle, do_start);
@@ -438,7 +461,7 @@ int aoa_wait_accessory(int want_vid, int want_pid, struct aoa_device *out)
             aoa_log("  attempt %d: no openable device found", attempt);
         }
     }
-    aoa_log("still not in accessory mode after %d retries", RETRY_ACCESSORY_MODE);
+    aoa_log_error("still not in accessory mode after %d retries", RETRY_ACCESSORY_MODE);
     return -1;
 }
 
@@ -498,12 +521,12 @@ int aoa_claim_accessory(struct aoa_device *d)
     int rc;
 
     if (find_accessory_endpoints(libusb_get_device(d->handle), &d->ep_in, &d->ep_out) != 0) {
-        aoa_log("no bulk endpoints found on the accessory interface (class 0xff / subclass 0xff)");
+        aoa_log_error("no bulk endpoints found on the accessory interface (class 0xff / subclass 0xff)");
         return -1;
     }
     rc = libusb_claim_interface(d->handle, 0);
     if (rc != 0) {
-        aoa_log("failed to claim interface 0: %s %s", libusb_error_name(rc), error_hint(rc));
+        aoa_log_warn("failed to claim interface 0: %s %s", libusb_error_name(rc), error_hint(rc));
         return -1;
     }
     d->claimed = 1;
@@ -603,14 +626,14 @@ int aoa_read_exact(struct aoa_device *d, unsigned char *dst, unsigned int len)
             continue; /* periodic timeout, let aoa_stop decide whether to exit */
         }
         if (r != 0) {
-            aoa_log("USB read failed: %s %s", libusb_error_name(r), error_hint(r));
+            aoa_log_error("USB read failed: %s %s", libusb_error_name(r), error_hint(r));
             return -1;
         }
         if (transferred <= 0) {
             /* The phone ends a transfer with a zero-length packet; that is not a link
              * failure, so keep waiting instead of tearing the whole bridge down. */
             if (++zero_reads >= MAX_ZERO_READS) {
-                aoa_log("USB read returned 0 bytes %u times in a row, giving up", zero_reads);
+                aoa_log_error("USB read returned 0 bytes %u times in a row, giving up", zero_reads);
                 return -1;
             }
             continue;

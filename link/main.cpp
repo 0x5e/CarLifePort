@@ -58,10 +58,11 @@ static std::string g_cuid;
 
 /* -------------------------------------------------------- Logging and utils */
 
-/* Shared body of log_line and log_line_debug. A level marker is written right after the
- * timestamp, which is where the Go backend looks for it when it relays these lines: a
- * marked line is dropped unless the backend runs at debug level. The subsystem token after
- * it names this half of the link, which the backend turns back into a module name. */
+/* Shared body of the log_line* functions. The level marker is written right after the
+ * timestamp, which is where the Go backend looks for it when it relays these lines: it
+ * becomes the line's level in the backend's own level column, and a line marked DEBUG is
+ * dropped unless the backend runs at debug level. No marker means info. The subsystem token
+ * after it names this half of the link, which the backend turns back into a module name. */
 static void log_vline(const char* level, const char* fmt, va_list args)
 {
     if (g_quiet) {
@@ -101,6 +102,27 @@ static void log_line_debug(const char* fmt, ...)
     va_list args;
     va_start(args, fmt);
     log_vline("DEBUG", fmt, args);
+    va_end(args);
+}
+
+/* Something did not work but the link keeps running: a step of the bring-up loop that will
+ * be retried, a frame or a connection that had to be dropped, an event this half does not
+ * know. Anything a failure leaves behind on the way out is an error instead. */
+static void log_line_warn(const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    log_vline("WARN", fmt, args);
+    va_end(args);
+}
+
+/* A failure: the operation was abandoned, or the link cannot continue and is about to be
+ * rebuilt by the backend. */
+static void log_line_error(const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    log_vline("ERROR", fmt, args);
     va_end(args);
 }
 
@@ -197,7 +219,7 @@ static void send_frame(uint8_t channel, uint8_t tag, const void* data, uint32_t 
     int fd = g_client_fd;
     if (fd >= 0) {
         if (!write_all(fd, header, sizeof(header)) || (len > 0 && !write_all(fd, (const uint8_t*)data, len))) {
-            log_line("failed to write to client: %s", strerror(errno));
+            log_line_error("failed to write to client: %s", strerror(errno));
         }
     }
     pthread_mutex_unlock(&g_send_lock);
@@ -417,7 +439,7 @@ static void send_statistic_info(void)
     info.crashLog = "";
 
     if (CCarLifeLib::getInstance()->cmdStatisticInfo(&info) < 0) {
-        log_line("failed to send statistics info");
+        log_line_error("failed to send statistics info");
         return;
     }
     log_line("sent statistics info (channel=%s, cuid=%s)", info.channel.c_str(), info.cuid.c_str());
@@ -427,7 +449,7 @@ static void send_hu_info(void)
 {
     struct utsname uts;
     if (uname(&uts) != 0) {
-        log_line("failed to read host identity: %s", strerror(errno));
+        log_line_error("failed to read host identity: %s", strerror(errno));
         return;
     }
 
@@ -457,7 +479,7 @@ static void send_hu_info(void)
     info.btaddress = "";
 
     if (CCarLifeLib::getInstance()->cmdHUInfro(&info) < 0) {
-        log_line("failed to send head unit info");
+        log_line_error("failed to send head unit info");
         return;
     }
     log_line("sent head unit info (model=%s, host=%s, release=%s)", info.model.c_str(),
@@ -488,7 +510,7 @@ static void send_authen_request(void)
         request.randomValue[i] = alphabet[rand() % 16];
     }
     if (CCarLifeLib::getInstance()->cmdHuAuthenRequest(&request) < 0) {
-        log_line("failed to send head unit authentication request");
+        log_line_error("failed to send head unit authentication request");
         return;
     }
     log_line("sent head unit authentication request");
@@ -500,7 +522,7 @@ static void cb_md_authen_response(S_AUTHEN_RESPONSE* response)
     S_HU_AUTHEN_RESULT result;
     result.authenResult = true;
     if (CCarLifeLib::getInstance()->cmdHuAuthenResult(&result) < 0) {
-        log_line("failed to send head unit authentication result");
+        log_line_error("failed to send head unit authentication result");
     }
 }
 
@@ -573,7 +595,7 @@ static void cb_media_progress_bar(S_MEDIA_PROGRESS_BAR* progress)
 
 static void cb_connect_exception(S_CONNECTION_EXCEPTION* exception)
 {
-    log_line("phone reported a connection exception, type %u", exception->exceptionType);
+    log_line_warn("phone reported a connection exception, type %u", exception->exceptionType);
 }
 
 static void cb_md_exit(void)
@@ -871,7 +893,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             send_authen_request();
             break;
         default:
-            log_line("unknown command channel tag=%u", tag);
+            log_line_warn("unknown command channel tag=%u", tag);
             break;
         }
         return;
@@ -961,7 +983,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             break;
         }
         default:
-            log_line("unknown control channel tag=%u", tag);
+            log_line_warn("unknown control channel tag=%u", tag);
             break;
         }
         return;
@@ -976,7 +998,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             lib->sendVRRecordData((u8*)(body + 4), body_length - 4, timestamp);
             return;
         }
-        log_line("unknown voice channel tag=%u", tag);
+        log_line_warn("unknown voice channel tag=%u", tag);
     }
 }
 
@@ -1009,7 +1031,7 @@ static void serve_client(int fd)
         uint8_t channel = header[0];
         uint32_t payload_length = get_be32(header + 1);
         if (payload_length == 0 || payload_length > CL_MAX_PAYLOAD) {
-            log_line("invalid frame received: channel=%u length=%u", channel, payload_length);
+            log_line_warn("invalid frame received: channel=%u length=%u", channel, payload_length);
             break;
         }
         payload.resize(payload_length);
@@ -1032,7 +1054,7 @@ static void* backend_loop(void*)
             if (errno == EINTR) {
                 continue;
             }
-            log_line("accept failed: %s", strerror(errno));
+            log_line_error("accept failed: %s", strerror(errno));
             return NULL;
         }
         set_close_on_exec(fd);
@@ -1064,7 +1086,7 @@ static int listen_unix(const char* path)
     ::unlink(path);
     int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
-        log_line("failed to create socket: %s", strerror(errno));
+        log_line_error("failed to create socket: %s", strerror(errno));
         return -1;
     }
     set_close_on_exec(fd);
@@ -1073,12 +1095,12 @@ static int listen_unix(const char* path)
     address.sun_family = AF_UNIX;
     strncpy(address.sun_path, path, sizeof(address.sun_path) - 1);
     if (::bind(fd, (struct sockaddr*)&address, sizeof(address)) != 0) {
-        log_line("failed to bind %s: %s", path, strerror(errno));
+        log_line_error("failed to bind %s: %s", path, strerror(errno));
         ::close(fd);
         return -1;
     }
     if (::listen(fd, 4) != 0) {
-        log_line("failed to listen: %s", strerror(errno));
+        log_line_error("failed to listen: %s", strerror(errno));
         ::close(fd);
         return -1;
     }
@@ -1089,7 +1111,7 @@ static void start_thread(void* (*entry)(void*), const char* name)
 {
     pthread_t thread;
     if (pthread_create(&thread, NULL, entry, NULL) != 0) {
-        log_line("failed to create %s thread", name);
+        log_line_error("failed to create %s thread", name);
         return;
     }
     pthread_detach(thread);
@@ -1246,11 +1268,11 @@ int main(int argc, char** argv)
         if (g_connection_result == 0) {
             break;
         }
-        log_line("channel setup attempt %d failed (return code %d), retrying in 1 second", attempt, g_connection_result);
+        log_line_warn("channel setup attempt %d failed (return code %d), retrying in 1 second", attempt, g_connection_result);
         sleep(1);
     }
     if (g_connection_result != 0) {
-        log_line("failed to establish the six channels, exiting");
+        log_line_error("failed to establish the six channels, exiting");
         ::close(g_listen_fd);
         ::unlink(socket_path);
         bridge_shutdown();
