@@ -42,6 +42,10 @@ struct aoa_device {
 /* Timestamped log, written to stderr */
 void aoa_log(const char *fmt, ...);
 
+/* Same, marked debug: the Go backend relays this process's output and drops marked lines
+ * unless it runs at debug level. Use it for periodic statistics, not for events. */
+void aoa_log_debug(const char *fmt, ...);
+
 int aoa_init(void);
 void aoa_fini(void);
 

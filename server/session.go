@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -182,7 +181,7 @@ func (s *session) sessionWatchdog(ctx context.Context) {
 		// retryAuthen := s.hostReady && !s.authenDone && time.Since(s.lastAuthenTry) >= authenRetryInterval
 		s.mu.Unlock()
 		if stalled {
-			log.Printf("no CarLife session yet (idle %s), resending protocol version", idle.Truncate(time.Second))
+			infof(moduleSession, "no CarLife session yet (idle %s), resending protocol version", idle.Truncate(time.Second))
 			s.startHandshake()
 		}
 		// if retryAuthen {
@@ -205,10 +204,10 @@ func (s *session) requestAuthentication() {
 	s.lastAuthenTry = time.Now()
 	s.mu.Unlock()
 	if err := s.host.sendAuthenRequest(); err != nil {
-		log.Printf("failed to start head unit authentication: %v", err)
+		errorf(moduleSession, "failed to start head unit authentication: %v", err)
 		return
 	}
-	log.Printf("running head unit authentication exchange (retry every %s until the phone confirms)",
+	infof(moduleSession, "running head unit authentication exchange (retry every %s until the phone confirms)",
 		authenRetryInterval)
 }
 
@@ -226,10 +225,10 @@ func (s *session) reportFrameRate() {
 	s.mu.Unlock()
 
 	if frames == 0 {
-		log.Printf("video: no frames in the last %s", elapsed.Truncate(time.Second))
+		debugf(moduleSession, "video: no frames in the last %s", elapsed.Truncate(time.Second))
 		return
 	}
-	log.Printf("video: %.1f fps received (%d frames, %.1f KB/s) in the last %s, requested %d fps",
+	debugf(moduleSession, "video: %.1f fps received (%d frames, %.1f KB/s) in the last %s, requested %d fps",
 		float64(frames)/elapsed.Seconds(), frames, float64(total)/1024/elapsed.Seconds(), elapsed.Truncate(time.Second), requested)
 }
 
@@ -267,16 +266,16 @@ func (s *session) onCommandEvent(event hostEvent) {
 		s.hostReady = connected
 		s.mu.Unlock()
 		if connected {
-			log.Printf("head unit channel ready, starting CarLife handshake")
+			infof(moduleSession, "head unit channel ready, starting CarLife handshake")
 			s.startHandshake()
 		} else {
-			log.Printf("head unit channel unavailable (connectionSetup returned %d); make sure usb-bridge is running, then restart carlife-host", result)
+			warnf(moduleSession, "head unit channel unavailable (connectionSetup returned %d); make sure usb-bridge is running, then restart carlife-host", result)
 		}
 		s.broadcastState()
 
 	case evProtocolMatch:
 		if len(event.payload) >= 4 {
-			log.Printf("protocol version match status: %d", binary.BigEndian.Uint32(event.payload))
+			infof(moduleSession, "protocol version match status: %d", binary.BigEndian.Uint32(event.payload))
 		}
 		s.requestVideo()
 		// Disabled for now: see requestAuthentication().
@@ -293,12 +292,12 @@ func (s *session) onCommandEvent(event hostEvent) {
 		s.width, s.height = width, height
 		requestedFPS := s.requestedFPS
 		s.mu.Unlock()
-		log.Printf("phone ready, video %dx%d@%d, starting encoder", width, height, fps)
+		infof(moduleSession, "phone ready, video %dx%d@%d, starting encoder", width, height, fps)
 		if fps > 0 && fps < requestedFPS {
-			log.Printf("phone limited the frame rate to %d fps (requested %d)", fps, requestedFPS)
+			infof(moduleSession, "phone limited the frame rate to %d fps (requested %d)", fps, requestedFPS)
 		}
 		if err := s.host.sendVideoEncoderStart(); err != nil {
-			log.Printf("failed to start video encoder: %v", err)
+			errorf(moduleSession, "failed to start video encoder: %v", err)
 		}
 		s.broadcastState()
 
@@ -306,28 +305,28 @@ func (s *session) onCommandEvent(event hostEvent) {
 		s.applyDeviceInfo(event.payload)
 
 	case evForeground:
-		log.Printf("CarLife on phone moved to foreground")
+		infof(moduleSession, "CarLife on phone moved to foreground")
 		s.broadcastState()
 
 	case evBackground:
-		log.Printf("CarLife on phone moved to background")
+		infof(moduleSession, "CarLife on phone moved to background")
 
 	case evScreenOn:
-		log.Printf("phone screen on")
+		infof(moduleSession, "phone screen on")
 
 	case evScreenOff:
-		log.Printf("phone screen off")
+		infof(moduleSession, "phone screen off")
 
 	case evTeleState:
 		if len(event.payload) >= 1 {
 			s.mu.Lock()
 			s.callState = int(event.payload[0])
 			s.mu.Unlock()
-			log.Printf("call state changed: %d", event.payload[0])
+			infof(moduleSession, "call state changed: %d", event.payload[0])
 		}
 
 	case evMDExit:
-		log.Printf("CarLife on phone exited")
+		infof(moduleSession, "CarLife on phone exited")
 		s.mu.Lock()
 		s.streaming = false
 		s.avcC = nil
@@ -335,13 +334,13 @@ func (s *session) onCommandEvent(event hostEvent) {
 		s.broadcastState()
 
 	case evMicWakeup:
-		log.Printf("voice wakeup")
+		infof(moduleSession, "voice wakeup")
 
 	case evMicEnd:
-		log.Printf("voice recording ended")
+		infof(moduleSession, "voice recording ended")
 
 	case evMicRecog:
-		log.Printf("voice recognition in progress")
+		infof(moduleSession, "voice recognition in progress")
 
 	case evAuthenResult:
 		passed := len(event.payload) >= 1 && event.payload[0] == 1
@@ -349,19 +348,19 @@ func (s *session) onCommandEvent(event hostEvent) {
 		s.authenDone = passed
 		s.mu.Unlock()
 		if passed {
-			log.Printf("phone authenticated this head unit")
+			infof(moduleSession, "phone authenticated this head unit")
 		} else {
-			log.Printf("phone rejected this head unit; retrying authentication in %s", authenRetryInterval)
+			warnf(moduleSession, "phone rejected this head unit; retrying authentication in %s", authenRetryInterval)
 		}
 
 	case evFeatureConfigRequest:
-		log.Printf("replied to phone feature config request")
+		infof(moduleSession, "replied to phone feature config request")
 
 	case evModuleStatus:
-		log.Printf("phone module status: %s", describeModuleStatus(event.payload))
+		infof(moduleSession, "phone module status: %s", describeModuleStatus(event.payload))
 
 	case evLog:
-		log.Printf("carlife-host: %s", string(event.payload))
+		debugf(moduleSession, "carlife-host: %s", string(event.payload))
 	}
 }
 
@@ -432,7 +431,7 @@ func statusName(statusID int, names ...string) string {
 func (s *session) applyDeviceInfo(payload []byte) {
 	var info map[string]any
 	if err := json.Unmarshal(payload, &info); err != nil {
-		log.Printf("failed to parse phone device info: %v", err)
+		warnf(moduleSession, "failed to parse phone device info: %v", err)
 		return
 	}
 	name := textField(info, "model")
@@ -443,7 +442,7 @@ func (s *session) applyDeviceInfo(payload []byte) {
 	s.deviceName = name
 	s.deviceModel = textField(info, "brand")
 	s.mu.Unlock()
-	log.Printf("phone device: %s (%s, Android %s)", name, textField(info, "manufacturer"), textField(info, "release"))
+	infof(moduleSession, "phone device: %s (%s, Android %s)", name, textField(info, "manufacturer"), textField(info, "release"))
 	s.broadcastState()
 }
 
@@ -465,7 +464,7 @@ func textField(info map[string]any, key string) string {
 
 func (s *session) startHandshake() {
 	if err := s.host.sendProtocolVersion(1, 0); err != nil {
-		log.Printf("failed to send protocol version: %v", err)
+		errorf(moduleSession, "failed to send protocol version: %v", err)
 	}
 }
 
@@ -473,9 +472,9 @@ func (s *session) requestVideo() {
 	s.mu.Lock()
 	width, height, fps := s.requestedWidth, s.requestedHeight, s.requestedFPS
 	s.mu.Unlock()
-	log.Printf("requesting phone to encode video at %dx%d@%d", width, height, fps)
+	infof(moduleSession, "requesting phone to encode video at %dx%d@%d", width, height, fps)
 	if err := s.host.sendVideoEncoderInit(int32(width), int32(height), int32(fps)); err != nil {
-		log.Printf("failed to request video encoding: %v", err)
+		errorf(moduleSession, "failed to request video encoding: %v", err)
 	}
 }
 
@@ -526,16 +525,16 @@ func (s *session) onVideoData(data []byte) {
 	s.mu.Unlock()
 
 	if config != nil {
-		log.Printf("video config: %dx%d, %d-byte AVCDecoderConfigurationRecord", width, height, len(config)-11)
+		infof(moduleSession, "video config: %dx%d, %d-byte AVCDecoderConfigurationRecord", width, height, len(config)-11)
 		s.hub.BroadcastVideoConfig(config)
 	}
 	s.hub.BroadcastVideoFrame(keyframe, encodeVideoFrame(videoStreamType, keyframe, data))
 
 	if first {
 		if config == nil {
-			log.Printf("video frames have started, waiting for SPS/PPS")
+			warnf(moduleSession, "video frames have started, waiting for SPS/PPS")
 		}
-		log.Printf("video stream started")
+		infof(moduleSession, "video stream started")
 		s.broadcastState()
 	}
 }
@@ -559,7 +558,7 @@ func (s *session) onAudioEvent(streamType byte, name string, event hostEvent) {
 		s.audioChannels[streamType] = channels
 		s.audioSamples[streamType] = 0
 		s.mu.Unlock()
-		log.Printf("channel %s audio: %d Hz / %d channels", name, sampleRate, channels)
+		infof(moduleSession, "channel %s audio: %d Hz / %d channels", name, sampleRate, channels)
 		s.hub.BroadcastAudioConfig(streamType, encodeAudioConfig(streamType, sampleRate, channels, name, nil))
 
 	case evAudioData:
@@ -691,7 +690,7 @@ func (s *session) handleTouch(contacts []touchContact) {
 		// here reads as the finger jumping to the top left corner, and the phone cancels a
 		// press that leaves the control before it lifts instead of completing it.
 		if err := s.host.sendTouch(motionUp, lastX, lastY); err != nil {
-			log.Printf("failed to send touch release: %v", err)
+			errorf(moduleSession, "failed to send touch release: %v", err)
 		}
 		return
 	}
@@ -724,7 +723,7 @@ func (s *session) handleTouch(contacts []touchContact) {
 	s.mu.Unlock()
 
 	if err := s.host.sendTouch(action, x, y); err != nil {
-		log.Printf("failed to send touch: %v", err)
+		errorf(moduleSession, "failed to send touch: %v", err)
 	}
 }
 
@@ -816,7 +815,7 @@ func (s *session) handleSiri() {
 
 func (s *session) sendHardKey(code uint32) {
 	if err := s.host.sendHardKey(code); err != nil {
-		log.Printf("failed to send hard key 0x%02X: %v", code, err)
+		errorf(moduleSession, "failed to send hard key 0x%02X: %v", code, err)
 	}
 }
 
@@ -832,7 +831,7 @@ func (s *session) changeDisplay(width, height, fps int) error {
 	s.requestedWidth, s.requestedHeight, s.requestedFPS = width, height, fps
 	s.mu.Unlock()
 
-	log.Printf("switching video mode to %dx%d@%d", width, height, fps)
+	infof(moduleSession, "switching video mode to %dx%d@%d", width, height, fps)
 	// Reset the encoder first, then renegotiate with the new mode; otherwise the phone
 	// will not start producing frames again.
 	_ = s.host.send(chCmd, cmdVideoEncoderReset, nil)

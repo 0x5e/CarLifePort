@@ -102,7 +102,7 @@ func envInt(name string, fallback int) int {
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		log.Fatalf("%s=%q is not an integer", name, value)
+		fatalf(moduleSelf, "%s=%q is not an integer", name, value)
 	}
 	return parsed
 }
@@ -116,7 +116,7 @@ func envBool(name string, fallback bool) bool {
 	}
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
-		log.Fatalf("%s=%q is not a boolean", name, value)
+		fatalf(moduleSelf, "%s=%q is not a boolean", name, value)
 	}
 	return parsed
 }
@@ -207,6 +207,9 @@ path defaults to a file next to this binary, which is where scripts/build.sh put
   CL_SOCKET        /tmp/carlife-host.sock  Unix socket carlife-host listens on
   CL_CHANNEL       20000000                vendor channel number reported to the phone
   CL_CUID          CarLifePort             head unit id reported to the phone
+  CL_LOG_LEVEL     info                    debug, info, warn or error; debug adds the
+                                           per-frame telemetry and the bridge's periodic
+                                           per-channel statistics
   CL_SUPERVISE     true                    start and restart carlife-usb-bridge and
                                            carlife-host next to this binary
   CL_BRIDGE        <binary dir>/carlife-usb-bridge   the bridge to start
@@ -225,11 +228,11 @@ func main() {
 		os.Exit(2)
 	}
 
-	log.SetFlags(log.Ltime)
+	setLogLevel()
 	cfg := loadConfig()
 
 	if _, err := os.Stat(cfg.webDir); err != nil {
-		log.Printf("warning: %s does not exist; run ./scripts/build.sh to build the browser client", cfg.webDir)
+		warnf(moduleSelf, "%s does not exist; run ./scripts/build.sh to build the browser client", cfg.webDir)
 	}
 
 	var sess *session
@@ -272,12 +275,31 @@ func main() {
 		var err error
 		certFile, keyFile, err = selfSignedCertificate(certificateDir())
 		if err != nil {
-			log.Fatalf("cannot prepare the TLS certificate: %v", err)
+			fatalf(moduleSelf, "cannot prepare the TLS certificate: %v", err)
 		}
 		scheme = "https"
-		// Handshake failures go through ErrorLog; the writer only drops the alerts a
-		// self-signed certificate provokes. The no-prefix logger keeps the default format.
+		// Handshake failures go through ErrorLog. The standard logger would stamp its own
+		// timestamp; the writer puts the line through logLine instead so it keeps the
+		// level and module columns.
 		server.ErrorLog = log.New(certificateAlertWriter{}, "", 0)
+	}
+
+	// Reported before the link is started, so that the addresses are on screen even when
+	// the first connection to the phone fails.
+	infof(moduleSelf, "service started")
+	for _, entry := range viewerURLs(cfg.addr, cfg.token, scheme) {
+		infof(moduleSelf, "viewer URL   %s", entry)
+	}
+	if cfg.tls {
+		infof(moduleSelf, "certificate  %s (self-signed: accept the browser warning once)", certFile)
+	}
+	infof(moduleSelf, "web assets   %s", cfg.webDir)
+	infof(moduleSelf, "socket       %s", cfg.socketPath)
+	if cfg.supervise {
+		infof(moduleSelf, "starting     %s", cfg.bridgePath)
+		infof(moduleSelf, "             %s", cfg.hostPath)
+	} else {
+		infof(moduleSelf, "supervising  off (CL_SUPERVISE=false): the link has to be started by hand")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -289,7 +311,7 @@ func main() {
 	supervisorDone := make(chan struct{})
 	if cfg.supervise {
 		if err := checkSiblings(cfg); err != nil {
-			log.Fatal(err)
+			fatalf(moduleSelf, "%v", err)
 		}
 		go func() {
 			defer close(supervisorDone)
@@ -310,22 +332,6 @@ func main() {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("CarLife head unit service started")
-	for _, entry := range viewerURLs(cfg.addr, cfg.token, scheme) {
-		log.Printf("  viewer URL   %s", entry)
-	}
-	if cfg.tls {
-		log.Printf("  certificate  %s (self-signed: accept the browser warning once)", certFile)
-	}
-	log.Printf("  web assets   %s", cfg.webDir)
-	log.Printf("  waiting for  %s", cfg.socketPath)
-	if cfg.supervise {
-		log.Printf("  starting     %s", cfg.bridgePath)
-		log.Printf("               %s", cfg.hostPath)
-	} else {
-		log.Printf("  supervising  off (CL_SUPERVISE=false): the link has to be started by hand")
-	}
-
 	var serveErr error
 	if cfg.tls {
 		serveErr = server.ListenAndServeTLS(certFile, keyFile)
@@ -335,8 +341,8 @@ func main() {
 	if serveErr != nil && serveErr != http.ErrServerClosed {
 		stop()
 		waitChildren()
-		log.Fatalf("HTTP server exited: %v", serveErr)
+		fatalf(moduleSelf, "HTTP server exited: %v", serveErr)
 	}
 	waitChildren()
-	log.Printf("stopped")
+	infof(moduleSelf, "stopped")
 }

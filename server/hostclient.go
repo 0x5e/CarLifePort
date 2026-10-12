@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -119,14 +118,14 @@ func (h *hostClient) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		conn, err := net.Dial("unix", h.path)
 		if err != nil {
-			log.Printf("waiting for carlife-host (%v), retrying in %s", err, reconnectInterval)
+			infof(moduleLink, "waiting for carlife-host (%v), retrying in %s", err, reconnectInterval)
 			if !sleepContext(ctx, reconnectInterval) {
 				return
 			}
 			continue
 		}
 
-		log.Printf("connected to carlife-host: %s", h.path)
+		infof(moduleLink, "connected to carlife-host: %s", h.path)
 		h.writeMu.Lock()
 		h.conn = conn
 		h.writeMu.Unlock()
@@ -142,7 +141,7 @@ func (h *hostClient) run(ctx context.Context) {
 		}
 		h.writeMu.Unlock()
 		conn.Close()
-		log.Printf("disconnected from carlife-host, reconnecting")
+		infof(moduleLink, "disconnected from carlife-host, reconnecting")
 		if h.onState != nil {
 			h.onState(false)
 		}
@@ -158,7 +157,7 @@ func (h *hostClient) readLoop(conn net.Conn) {
 		channel := header[0]
 		length := binary.BigEndian.Uint32(header[1:])
 		if length == 0 || length > maxFramePayload {
-			log.Printf("carLife-host sent an invalid frame: channel=%d length=%d", channel, length)
+			warnf(moduleLink, "carLife-host sent an invalid frame: channel=%d length=%d", channel, length)
 			return
 		}
 		payload := make([]byte, length)

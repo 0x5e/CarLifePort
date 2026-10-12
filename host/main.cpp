@@ -60,7 +60,10 @@ static std::string g_cuid = "CarLifePort";
 
 /* -------------------------------------------------------- Logging and utils */
 
-static void log_line(const char* fmt, ...)
+/* Shared body of log_line and log_line_debug. A level marker is written right after the
+ * timestamp, which is where the Go backend looks for it when it relays these lines: a
+ * marked line is dropped unless the backend runs at debug level. */
+static void log_vline(const char* level, const char* fmt, va_list args)
 {
     if (g_quiet) {
         return;
@@ -73,12 +76,30 @@ static void log_line(const char* fmt, ...)
 
     fprintf(stderr, "[%02d:%02d:%02d.%03d] ", tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec,
             (int)(tv.tv_usec / 1000));
-    va_list args;
-    va_start(args, fmt);
+    if (level != NULL) {
+        fprintf(stderr, "%s ", level);
+    }
     vfprintf(stderr, fmt, args);
-    va_end(args);
     fputc('\n', stderr);
     fflush(stderr);
+}
+
+static void log_line(const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    log_vline(NULL, fmt, args);
+    va_end(args);
+}
+
+/* For whatever the phone drives on a timer, such as the playback progress bar: worth
+ * keeping while a session is being watched live, too repetitive to keep by default. */
+static void log_line_debug(const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    log_vline("DEBUG", fmt, args);
+    va_end(args);
 }
 
 static void put_be32(uint8_t* out, uint32_t value)
@@ -577,7 +598,7 @@ static void cb_media_info(S_MEDIA_INFO* info)
 
 static void cb_media_progress_bar(S_MEDIA_PROGRESS_BAR* progress)
 {
-    log_line("media progress: %u ms", progress->progressBar);
+    log_line_debug("media progress: %u ms", progress->progressBar);
 }
 
 static void cb_connect_exception(S_CONNECTION_EXCEPTION* exception)

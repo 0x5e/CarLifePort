@@ -52,9 +52,11 @@ static const char *const kIdent[6] = {
 
 static libusb_context *g_ctx = NULL;
 
-void aoa_log(const char *fmt, ...)
+/* Shared body of aoa_log and aoa_log_debug. Callers that pass a level get it written
+ * right after the timestamp, which is where the Go backend looks for it when it relays
+ * these lines: a marked line is dropped unless the backend runs at debug level. */
+static void aoa_vlog(const char *level, const char *fmt, va_list ap)
 {
-    va_list ap;
     char ts[16];
     time_t now = time(NULL);
     struct tm tmv;
@@ -62,11 +64,32 @@ void aoa_log(const char *fmt, ...)
     localtime_r(&now, &tmv);
     strftime(ts, sizeof(ts), "%H:%M:%S", &tmv);
     fprintf(stderr, "[%s] ", ts);
-    va_start(ap, fmt);
+    if (level != NULL) {
+        fprintf(stderr, "%s ", level);
+    }
     vfprintf(stderr, fmt, ap);
-    va_end(ap);
     fputc('\n', stderr);
     fflush(stderr);
+}
+
+void aoa_log(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    aoa_vlog(NULL, fmt, ap);
+    va_end(ap);
+}
+
+/* Periodic diagnostics (the forwarding statistics) rather than events: they are worth
+ * keeping for a session being watched live, and too repetitive to keep by default. */
+void aoa_log_debug(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    aoa_vlog("DEBUG", fmt, ap);
+    va_end(ap);
 }
 
 /* ------------------------------------------------------------------ utils */

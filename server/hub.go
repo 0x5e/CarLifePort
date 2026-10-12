@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -149,7 +148,7 @@ func (h *Hub) BroadcastVideoFrame(keyframe bool, frame []byte) {
 				continue
 			}
 			if !keyframe {
-				log.Printf("viewer %s waited %s without a keyframe, forwarding from a delta frame",
+				warnf(moduleViewer, "%s waited %s without a keyframe, forwarding from a delta frame",
 					v.peer, now.Sub(v.waitedSince).Truncate(time.Second))
 			}
 			v.ready = true
@@ -196,7 +195,7 @@ func (h *Hub) BroadcastJSON(value any) {
 
 func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("token") != h.token {
-		log.Printf("rejected a WebSocket connection from %s: invalid token", r.RemoteAddr)
+		warnf(moduleViewer, "rejected a WebSocket connection from %s: invalid token", r.RemoteAddr)
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			return
@@ -210,7 +209,7 @@ func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		log.Printf("WebSocket handshake failed: %v", err)
+		warnf(moduleViewer, "WebSocket handshake failed: %v", err)
 		return
 	}
 
@@ -222,7 +221,7 @@ func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() {
 		h.remove(v)
-		log.Printf("viewer %s disconnected (%d left)", v.peer, h.count())
+		infof(moduleViewer, "%s disconnected (%d left)", v.peer, h.count())
 	}()
 	defer conn.CloseNow()
 
@@ -266,7 +265,7 @@ func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	h.add(v)
-	log.Printf("viewer %s connected (%d total)", v.peer, h.count())
+	infof(moduleViewer, "%s connected (%d total)", v.peer, h.count())
 	h.session.broadcastState()
 
 	for {

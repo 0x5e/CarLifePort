@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -78,9 +77,9 @@ func (s *supervisor) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 		case err := <-exited(bridge):
-			log.Printf("carlife-usb-bridge exited (%s), rebuilding the link", exitReason(err))
+			infof(moduleSupervisor, "carlife-usb-bridge exited (%s), rebuilding the link", exitReason(err))
 		case err := <-exited(host):
-			log.Printf("carlife-host exited (%s), rebuilding the link", exitReason(err))
+			infof(moduleSupervisor, "carlife-host exited (%s), rebuilding the link", exitReason(err))
 		}
 
 		bridge.stop()
@@ -88,7 +87,7 @@ func (s *supervisor) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("rebuilding the link in %s (Ctrl-C to stop)", restartDelay)
+		infof(moduleSupervisor, "rebuilding the link in %s (Ctrl-C to stop)", restartDelay)
 		if !waitOrStop(ctx, restartDelay) {
 			return
 		}
@@ -98,28 +97,29 @@ func (s *supervisor) run(ctx context.Context) {
 // startPair runs both children. A child that cannot be started is reported and skipped: the
 // other one is still worth running, and the retry loop will try again.
 func (s *supervisor) startPair() (bridge, host *childProcess) {
-	bridge, err := startChild("bridge", s.bridgePath)
+	bridge, err := startChild(moduleBridge, s.bridgePath)
 	if err != nil {
-		log.Printf("cannot start %s: %v", s.bridgePath, err)
+		errorf(moduleSupervisor, "cannot start %s: %v", s.bridgePath, err)
 	}
-	host, err = startChild("host", s.hostPath, s.hostArgs...)
+	host, err = startChild(moduleHost, s.hostPath, s.hostArgs...)
 	if err != nil {
-		log.Printf("cannot start %s: %v", s.hostPath, err)
+		errorf(moduleSupervisor, "cannot start %s: %v", s.hostPath, err)
 	}
 	return bridge, host
 }
 
 // childProcess is a running child plus the channel that reports how it ended.
 type childProcess struct {
-	name string
-	cmd  *exec.Cmd
-	done chan error
+	// module is the name the child's output is tagged with.
+	module string
+	cmd    *exec.Cmd
+	done   chan error
 }
 
 // startChild runs path and feeds its output through logChild. Both output streams share one
 // pipe: with the same *os.File for Stdout and Stderr, os/exec copies them from a single
 // goroutine, so lines from the two never interleave.
-func startChild(name, path string, args ...string) (*childProcess, error) {
+func startChild(module, path string, args ...string) (*childProcess, error) {
 	read, write, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -135,10 +135,10 @@ func startChild(name, path string, args ...string) (*childProcess, error) {
 	}
 	// The child holds the only remaining write end, so reading until EOF ends with it.
 	write.Close()
-	log.Printf("started %s (pid %d)", path, cmd.Process.Pid)
+	infof(moduleSupervisor, "started %s (pid %d)", path, cmd.Process.Pid)
 
-	child := &childProcess{name: name, cmd: cmd, done: make(chan error, 1)}
-	go logChild(name, read)
+	child := &childProcess{module: module, cmd: cmd, done: make(chan error, 1)}
+	go logChild(module, read)
 	go func() {
 		child.done <- cmd.Wait()
 		// Closing after the send lets a second reader see the exit without blocking, which
@@ -148,9 +148,10 @@ func startChild(name, path string, args ...string) (*childProcess, error) {
 	return child, nil
 }
 
-// logChild prints every line a child writes with a [bridge] / [host] prefix, so that the
-// three processes stay distinguishable in one terminal.
-func logChild(name string, output io.ReadCloser) {
+// logChild relays one line at a time from a child. The child stamps its own lines and marks
+// the non-info ones; both are replaced by this process's own columns, so all three
+// processes end up in one format.
+func logChild(module string, output io.ReadCloser) {
 	defer output.Close()
 	reader := bufio.NewReader(output)
 	for {
@@ -158,9 +159,9 @@ func logChild(name string, output io.ReadCloser) {
 		// Scanner would silently give up on them at its buffer limit.
 		line, err := reader.ReadString('\n')
 		if line != "" {
-			fmt.Fprintf(os.Stderr, "[%s] %s", name, line)
-			if !strings.HasSuffix(line, "\n") {
-				fmt.Fprintln(os.Stderr)
+			level, message := parseChildLine(line)
+			if strings.TrimSpace(message) != "" {
+				logLine(level, module, "%s", message)
 			}
 		}
 		if err != nil {
@@ -192,7 +193,7 @@ func (c *childProcess) stop() {
 	select {
 	case <-c.done:
 	case <-time.After(stopTimeout):
-		log.Printf("%s did not exit after SIGTERM, killing it", c.name)
+		warnf(moduleSupervisor, "%s did not exit after SIGTERM, killing it", c.module)
 		c.cmd.Process.Kill()
 		<-c.done
 	}

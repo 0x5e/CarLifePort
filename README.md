@@ -71,15 +71,16 @@ dist/carlifed
 单个进程即包含全部组件。`carlifed` 启动后把 `carlife-usb-bridge` 与 `carlife-host` 作为子进程
 拉起，两者中任一个退出就将这一对一起重启（重新插拔手机即由此触发）。
 
-三个进程的日志带 `[bridge]` / `[host]` 前缀输出到同一终端，Ctrl-C 停止全部。
+三个进程的日志输出到同一终端，格式与级别见「日志」。Ctrl-C 停止全部。
 
 浏览器打开 `carlifed` 打印的任意一个地址。默认监听 `0.0.0.0:8080`，启动时列出每张网卡的地址
 （带网卡名）：
 
 ```
-  viewer URL   https://127.0.0.1:8080/?token=0
-  viewer URL   https://192.168.40.2:8080/?token=0 (en0)
-  certificate  .../self-signed.crt (self-signed: accept the browser warning once)
+17:08:35.984 INFO  carlifed   service started
+17:08:35.984 INFO  carlifed   viewer URL   https://127.0.0.1:8080/?token=0
+17:08:35.984 INFO  carlifed   viewer URL   https://192.168.40.2:8080/?token=0 (en0)
+17:08:35.984 INFO  carlifed   certificate  .../self-signed.crt (self-signed: accept the browser warning once)
 ```
 
 服务默认使用 **HTTPS**，证书为启动时生成的自签名证书（缓存在用户缓存目录，生成后复用，
@@ -113,6 +114,7 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 | `CL_SOCKET` | `/tmp/carlife-host.sock` | 宿主监听的 Unix socket，必须与 `host/protocol.h` 的 `CL_DEFAULT_SOCKET` 一致 |
 | `CL_CHANNEL` | `20000000` | 上报给手机的渠道号（见「车机身份上报」） |
 | `CL_CUID` | `CarLifePort` | 上报给手机的车机 id，指南要求每台唯一 |
+| `CL_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error`，`verbose` 等同于 `debug` |
 | `CL_SUPERVISE` | `true` | 由 `carlifed` 拉起并重启桥接层与宿主；`false` 时只运行自身 |
 | `CL_BRIDGE` | `<carlifed 目录>/carlife-usb-bridge` | 要拉起的桥接层可执行文件 |
 | `CL_HOST` | `<carlifed 目录>/carlife-host` | 要拉起的宿主可执行文件 |
@@ -127,12 +129,49 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 | | `--vid` / `--pid` | 无 | 指定目标设备的 VID / PID |
 | | `--list` | 关 | 只枚举 USB 设备，不操作任何设备 |
 | | `--force-handshake` | 关 | 已处于 accessory 模式时仍重发 51/52/53 |
-| | `--quiet` | 关 | 不打印周期性统计 |
+| | `--quiet` | 关 | 完全不打印周期性的转发统计（默认打印，但标记为 debug，由 `carlifed` 按级别过滤） |
 | `carlife-host` | `--socket <path>` | `/tmp/carlife-host.sock` | 宿主监听的 Unix socket 路径 |
 | | `--channel <name>` | `20000000` | 上报给手机的渠道号 |
 | | `--cuid <id>` | `CarLifePort` | 上报给手机的车机 id |
 | | `-q` / `--quiet` | 关 | 不打印自身运行日志 |
 | | `-v` / `--verbose` | 关 | 额外输出协议栈内部日志（默认丢弃） |
+
+### 日志
+
+三个进程的输出汇入同一终端，格式为 `时间 级别 模块 内容`：
+
+```
+17:08:35.984 INFO  carlifed   service started
+17:08:36.422 INFO  bridge     waiting for a phone
+17:08:36.415 INFO  host       listening on /tmp/carlife-host.sock
+17:08:37.987 INFO  link       connected to carlife-host: /tmp/carlife-host.sock
+17:08:41.203 INFO  session    phone ready, video 1280x720@60, starting encoder
+17:08:41.208 DEBUG session    video: 59.8 fps received (299 frames, 3612.4 KB/s) in the last 5s, requested 60 fps
+```
+
+模块对应到实现：
+
+| 模块 | 来源 |
+|---|---|
+| `carlifed` | 启动、关闭与配置（`server/main.go`） |
+| `supervisor` | 桥接层与宿主的拉起和重启 |
+| `link` | 与宿主的 Unix socket 连接（`server/hostclient.go`） |
+| `session` | CarLife 会话状态机：握手、视频、音频、按键 |
+| `viewer` | 浏览器连接与 HTTP/WebSocket 接口 |
+| `bridge` / `host` | 两个子进程的输出，由 `carlifed` 转发 |
+
+级别由 `CL_LOG_LEVEL` 选择（默认 `info`）：
+
+| 级别 | 内容 |
+|---|---|
+| `debug` | 以上全部，外加周期性遥测：实测帧率、桥接层的每通道转发统计、手机的播放进度 |
+| `info` | 状态变化：握手推进、会话开始与结束、客户端接入、子进程重建 |
+| `warn` | 可以继续运行但需要留意：令牌不符、握手停滞、手机拒绝认证、帧率被限制 |
+| `error` | 发送失败、子进程无法启动等 |
+
+周期性遥测在源头标记，而不是由 `carlifed` 按内容识别：桥接层的每通道统计（`aoa_log_debug`）与
+宿主的播放进度（`log_line_debug`）在自身时间戳后写入 `DEBUG` 标记，`carlifed` 转发时按标记过滤。
+因此这类内容在 `CL_LOG_LEVEL=debug` 下可见，而子进程单独运行时也总能看到。
 
 ### 设备接入时机
 
@@ -178,8 +217,8 @@ CL_SUPERVISE=false dist/carlifed # 只运行后端，连接一个已运行的宿
 `CL_SUPERVISE=false` 时 `carlifed` 只提供 HTTP/WebSocket 服务，不拉起子进程；宿主监听的 socket
 路径取自 `CL_SOCKET`（默认 `/tmp/carlife-host.sock`，与宿主自身的默认值一致）。
 
-实际帧率由手机决定，后端每 5 秒打印一行实测值（`video: 29.8 fps received ...`），手机限制帧率时
-也会打印（`phone limited the frame rate to 30`）。
+实际帧率由手机决定，后端以 debug 级别每 5 秒打印一行实测值（`video: 29.8 fps received ...`），
+手机限制帧率时以 info 级别打印（`phone limited the frame rate to 30`）。
 
 ### 车机鉴权（当前停用）
 

@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"log"
 	"math/big"
 	"net"
 	"os"
@@ -27,7 +26,7 @@ type certificateAlertWriter struct{}
 func (certificateAlertWriter) Write(p []byte) (int, error) {
 	line := strings.TrimSpace(string(p))
 	if !isCertificateAlert(line) {
-		log.Print(line)
+		warnf(moduleViewer, "%s", line)
 	}
 	return len(p), nil
 }

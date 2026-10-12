@@ -466,15 +466,15 @@ static int usb_rx_loop(void)
                 last_tx = tx_sum;
                 last_rx = rx_sum;
                 last_drop = drop_sum;
-                aoa_log("USB->local %llu frames | local->USB %llu frames | dropped (no client) %llu frames", tx_sum, rx_sum,
-                        drop_sum);
+                aoa_log_debug("USB->local %llu frames | local->USB %llu frames | dropped (no client) %llu frames", tx_sum,
+                              rx_sum, drop_sum);
                 for (i = 1; i <= AOA_CHANNEL_COUNT; i++) {
                     if (g_ch[i].tx_frames == 0 && g_ch[i].rx_frames == 0 && g_ch[i].dropped == 0) {
                         continue;
                     }
-                    aoa_log("    %-5s ↓%llu/%llu B  ↑%llu/%llu B%s", g_ch[i].name, g_ch[i].tx_frames,
-                            g_ch[i].tx_bytes, g_ch[i].rx_frames, g_ch[i].rx_bytes,
-                            g_ch[i].client_fd < 0 ? "  (no client)" : "");
+                    aoa_log_debug("    %-5s ↓%llu/%llu B  ↑%llu/%llu B%s", g_ch[i].name, g_ch[i].tx_frames,
+                                  g_ch[i].tx_bytes, g_ch[i].rx_frames, g_ch[i].rx_bytes,
+                                  g_ch[i].client_fd < 0 ? "  (no client)" : "");
                 }
             }
         }
@@ -600,7 +600,7 @@ static int parse_args(int argc, char **argv, int *vid, int *pid, const char **ho
  *
  * Every step is retried rather than treated as fatal, because the phone may still be on its
  * way in: it can be plugged in after this process started, or it can be held by another
- * program (adb server, WeChat) that has to let go first. The first attempt prints the device
+ * application that has to let go first. The first attempt prints the device
  * list; later attempts are throttled to one line per 10 s.
  *
  * Returns 0 with *out claimed and open, or -1 if a stop was requested. */
@@ -619,7 +619,7 @@ static int acquire_device(int vid, int pid, int force_handshake, struct aoa_devi
         if (aoa_open_target(vid, pid, &dev, &is_accessory, attempt == 0) != 0) {
             if (attempt == 0 || attempt % 10 == 9) {
                 aoa_log("no phone yet, waiting (attempt %u): plug it in and make sure no other "
-                        "program holds the USB device (adb server, WeChat)",
+                        "application is using the USB device",
                         attempt + 1);
             }
             goto retry;
