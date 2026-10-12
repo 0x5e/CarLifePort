@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// defaultSocketPath must match CL_DEFAULT_SOCKET in link/protocol.h: carlife-link listens
-// on this socket and carlifed connects to it.
+// defaultSocketPath is where carlife-link listens and carlifed connects. The value lives
+// here alone: carlife-link has no default of its own and is told the path with --socket.
 const defaultSocketPath = "/tmp/carlife-link.sock"
 
 // listenAddress is one address the browser client can be opened with, optionally

@@ -82,10 +82,10 @@ dist/carlifed
 （带网卡名）：
 
 ```
-17:08:35.984 INFO  carlifed   service started
-17:08:35.984 INFO  carlifed   viewer URL   https://127.0.0.1:8080/?token=0
-17:08:35.984 INFO  carlifed   viewer URL   https://192.168.40.2:8080/?token=0 (en0)
-17:08:35.984 INFO  carlifed   certificate  .../self-signed.crt (self-signed: accept the browser warning once)
+17:08:35.984 INFO  [carlifed]   service started
+17:08:35.984 INFO  [carlifed]   viewer URL   https://127.0.0.1:8080/?token=0
+17:08:35.984 INFO  [carlifed]   viewer URL   https://192.168.40.2:8080/?token=0 (en0)
+17:08:35.984 INFO  [carlifed]   certificate  .../self-signed.crt (self-signed: accept the browser warning once)
 ```
 
 服务使用 **HTTPS**，证书为启动时生成的自签名证书（缓存在用户缓存目录，生成后复用，
@@ -122,16 +122,15 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 
 `CL_LINK` / `CL_WEB` 按给定值使用，相对路径相对于当前工作目录。监听地址、访问令牌、帧率与
 分辨率以外的行为不可配置：服务总是使用自签名证书的 HTTPS，总是拉起并重启链接进程，链接进程
-监听的 Unix socket 固定为 `/tmp/carlife-link.sock`（与 `link/protocol.h` 的 `CL_DEFAULT_SOCKET`
-一致）。
+监听的 Unix socket 固定为 `/tmp/carlife-link.sock`。
 
 链接进程由 `carlifed` 组装参数拉起（`--socket` / `--channel` / `--cuid`），其全部命令行参数如下：
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--socket <path>` | `/tmp/carlife-link.sock` | 链接进程监听的 Unix socket 路径 |
-| `--channel <name>` | `20000000` | 上报给手机的渠道号 |
-| `--cuid <id>` | `CarLifePort` | 上报给手机的车机 id |
+| `--socket <path>` | 无（必填） | 链接进程监听的 Unix socket 路径 |
+| `--channel <name>` | 无（必填） | 上报给手机的渠道号 |
+| `--cuid <id>` | 无（必填） | 上报给手机的车机 id |
 | `--host <address>` | `127.0.0.1` | 六条本地通道端口的监听地址 |
 | `--vid` / `--pid` | 自动挑选 | 指定目标设备的 VID / PID |
 | `--force-handshake` | 关 | 已处于 accessory 模式时仍重发 51/52/53 |
@@ -140,20 +139,26 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 | `-q` / `--quiet` | 关 | 不打印运行日志与周期性的转发统计 |
 | `-v` / `--verbose` | 关 | 额外输出协议栈内部日志（默认丢弃） |
 
+三个必填参数的默认值只存在于 `carlifed`（`CL_CHANNEL` / `CL_CUID`，socket 路径是内部常量），
+链接进程不重复定义；缺任一个都会直接报错退出，`--list` 与 `--usb-only` 不需要它们。
+
 周期性的转发统计默认打印但标记为 debug，由 `carlifed` 按级别过滤。
 
 ### 日志
 
-两个进程的输出汇入同一终端，格式为 `时间 级别 模块 内容`：
+两个进程的输出汇入同一终端，格式为 `时间 级别 [模块] 内容`：
 
 ```
-17:08:35.984 INFO  carlifed   service started
-17:08:36.415 INFO  bridge     waiting for a phone
-17:08:36.422 INFO  stack      listening on /tmp/carlife-link.sock
-17:08:37.987 INFO  link       connected to carlife-link: /tmp/carlife-link.sock
-17:08:41.203 INFO  session    phone ready, video 1280x720@60, starting encoder
-17:08:41.208 DEBUG session    video: 59.8 fps received (299 frames, 3612.4 KB/s) in the last 5s, requested 60 fps
+17:08:35.984 INFO  [carlifed]   service started
+17:08:36.415 INFO  [bridge]     waiting for a phone
+17:08:36.422 INFO  [stack]      listening on /tmp/carlife-link.sock
+17:08:37.987 INFO  [link]       connected to carlife-link: /tmp/carlife-link.sock
+17:08:41.203 INFO  [session]    phone ready, video 1280x720@60, starting encoder
+17:08:41.208 DEBUG [session]    video: 59.8 fps received (299 frames, 3612.4 KB/s) in the last 5s, requested 60 fps
 ```
+
+输出到终端时带颜色：时间为灰色，级别按严重程度着色（`DEBUG` 白、`INFO` 绿、`WARN` 黄、`ERROR` 红），
+模块与内容保持终端默认颜色。stderr 不是终端时（重定向到文件或管道）不上色，避免转义序列混入日志文件。
 
 模块对应到实现：
 
@@ -217,13 +222,15 @@ socket，进程退出后 socket 仍被持有，`carlifed` 会连接到一个无�
 ```sh
 dist/carlife-link --list      # 只枚举 USB 设备，不操作任何设备
 dist/carlife-link --usb-only  # 只运行 USB 传输，不启动协议栈
-dist/carlife-link             # 完整的链接进程
-dist/carlife-link -v          # 完整链接进程，并保留协议栈内部日志
+dist/carlife-link --socket /tmp/carlife-link.sock --channel 20000000 --cuid CarLifePort
+                              # 完整的链接进程；三个参数必填，取值即 carlifed 的默认值
+dist/carlife-link --socket /tmp/carlife-link.sock --channel 20000000 --cuid CarLifePort -v
+                              # 同上，并保留协议栈内部日志
 ```
 
 链接进程接受上表的全部参数（见「配置」），正常情况下由 `carlifed` 组装，只有手工调试时才直接运行。
-`carlifed` 总是拉起链接进程，因此后端无法单独运行；手工调试链路时需要连的链接 socket 固定为
-`/tmp/carlife-link.sock`。
+`carlifed` 总是拉起链接进程，因此后端无法单独运行；手工跑完整链路时要自己给出 socket 路径，
+`carlifed` 用的是 `/tmp/carlife-link.sock`。
 
 实际帧率由手机决定，后端以 debug 级别每 5 秒打印一行实测值（`video: 29.8 fps received ...`），
 手机限制帧率时以 info 级别打印（`phone limited the frame rate to 30`）。

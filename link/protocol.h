@@ -15,9 +15,6 @@
 /* Frame header length: 1B channel + 4B payloadLen (big-endian) */
 #define CL_FRAME_HEADER 5
 
-/* Default Unix socket path; the Go backend connects to this. */
-#define CL_DEFAULT_SOCKET "/tmp/carlife-link.sock"
-
 /* Maximum length of a single frame, used for defensive validation
  * (video frames are at most 600KB plus margin) */
 #define CL_MAX_PAYLOAD (1024 * 1024)

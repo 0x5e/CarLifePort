@@ -50,12 +50,11 @@ static int g_verbose = 0;
 
 /* Identity reported to the phone during the handshake. The phone authenticates the head
  * unit from the statistics info it sends and checks the vendor channel number Baidu hands
- * out to head unit vendors (guide 17.2); the open source vehicle library ships none, so
- * this is the aftermarket channel its own build defaults to, "20000000"
- * (CommonParams.VEHICLE_CHANNEL_AFTER_MARKET). Override with --channel. See README
- * ("Head unit identity"). */
-static std::string g_channel = "20000000";
-static std::string g_cuid = "CarLifePort";
+ * out to head unit vendors (guide 17.2). Both are supplied by --channel and --cuid: the
+ * Go backend owns the defaults, so this process has none of its own. See README ("Head
+ * unit identity"). */
+static std::string g_channel;
+static std::string g_cuid;
 
 /* -------------------------------------------------------- Logging and utils */
 
@@ -1108,9 +1107,9 @@ static void usage(const char* program)
     fprintf(stderr,
             "Usage: %s [options]\n"
             "\n"
-            "  --socket <path>    Unix socket the Go backend connects to (default %s)\n"
-            "  --channel <name>   vendor channel number reported to the phone (default 20000000)\n"
-            "  --cuid <id>        head unit id reported to the phone (default CarLifePort)\n"
+            "  --socket <path>    Unix socket the Go backend connects to (required)\n"
+            "  --channel <name>   vendor channel number reported to the phone (required)\n"
+            "  --cuid <id>        head unit id reported to the phone (required)\n"
             "  --host <address>   local address of the six channel ports (default 127.0.0.1)\n"
             "  --vid <0xXXXX>     target device VID (default: pick a phone)\n"
             "  --pid <0xXXXX>     target device PID (default: pick a phone)\n"
@@ -1119,13 +1118,15 @@ static void usage(const char* program)
             "  --usb-only         run the USB transport without the protocol stack\n"
             "  -q, --quiet        do not print this process's runtime logs\n"
             "  -v, --verbose      also emit the protocol stack's internal logs (discarded by default)\n"
-            "  -h, --help         show this help\n",
-            program, CL_DEFAULT_SOCKET);
+            "  -h, --help         show this help\n"
+            "\n"
+            "The three required options are not needed by --list or --usb-only.\n",
+            program);
 }
 
 int main(int argc, char** argv)
 {
-    const char* socket_path = CL_DEFAULT_SOCKET;
+    const char* socket_path = NULL;
     const char* channel_host = "127.0.0.1";
     int vid = -1;
     int pid = -1;
@@ -1161,6 +1162,26 @@ int main(int argc, char** argv)
             return 0;
         } else {
             fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            usage(argv[0]);
+            return 2;
+        }
+    }
+
+    /* The Go backend owns these values and always passes them, so this process carries no
+     * defaults of its own: a missing one would otherwise silently run with an identity
+     * nobody configured. The two standalone modes below never reach the protocol stack and
+     * do not need them. */
+    if (!list_only && !usb_only) {
+        const char* missing = NULL;
+        if (socket_path == NULL) {
+            missing = "--socket";
+        } else if (g_channel.empty()) {
+            missing = "--channel";
+        } else if (g_cuid.empty()) {
+            missing = "--cuid";
+        }
+        if (missing != NULL) {
+            fprintf(stderr, "%s is required\n", missing);
             usage(argv[0]);
             return 2;
         }

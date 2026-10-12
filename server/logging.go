@@ -37,9 +37,9 @@ const (
 	moduleStack      = "stack"      // relayed output of the link's protocol stack
 )
 
-// moduleWidth is the module column width (the longest module name). Everything after it
-// starts at the same column.
-const moduleWidth = len(moduleSupervisor)
+// moduleWidth is the module column width: the longest module name plus the brackets it is
+// printed in. Everything after it starts at the same column.
+const moduleWidth = len(moduleSupervisor) + 2
 
 var (
 	logMu   sync.Mutex
@@ -68,7 +68,29 @@ func setLogLevel() {
 	}
 }
 
-// logLine writes "time level module message" to stderr.
+// ANSI colours: the timestamp is greyed out, the level column takes the colour of its
+// severity, and the module and the message keep the terminal's default colour.
+const (
+	colourReset  = "\033[0m"
+	colourGrey   = "\033[90m"
+	colourWhite  = "\033[97m"
+	colourGreen  = "\033[32m"
+	colourYellow = "\033[33m"
+	colourRed    = "\033[31m"
+)
+
+// levelColours is indexed by logLevel: debug white, info green, warn yellow, error red.
+var levelColours = [...]string{colourWhite, colourGreen, colourYellow, colourRed}
+
+// colourEnabled is decided once at startup: colours are for a terminal, and emitting the
+// escape sequences into a redirected stderr would only put them in the file.
+var colourEnabled = func() bool {
+	info, err := os.Stderr.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}()
+
+// logLine writes "time level [module] message" to stderr; the module column is omitted
+// for the few lines that belong to no subsystem.
 //
 // stderr rather than stdout because the child processes write there too and the three
 // streams end up in one terminal; keeping this one on stderr as well means the order is
@@ -79,13 +101,21 @@ func logLine(level logLevel, module, format string, args ...any) {
 	}
 	message := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05.000")
+	name := fmt.Sprintf("%-5s", levelNames[level])
+	column := ""
+	if module != "" {
+		column = fmt.Sprintf(" %-*s", moduleWidth, "["+module+"]")
+	}
 	logMu.Lock()
 	defer logMu.Unlock()
-	if module == "" {
-		fmt.Fprintf(os.Stderr, "%s %-5s %s\n", timestamp, levelNames[level], message)
+	if !colourEnabled {
+		fmt.Fprintf(os.Stderr, "%s %s%s %s\n", timestamp, name, column, message)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s %-5s %-*s %s\n", timestamp, levelNames[level], moduleWidth, module, message)
+	fmt.Fprintf(os.Stderr, "%s%s%s %s%s%s%s %s\n",
+		colourGrey, timestamp, colourReset,
+		levelColours[level], name, colourReset,
+		column, message)
 }
 
 func debugf(module, format string, args ...any) { logLine(levelDebug, module, format, args...) }
