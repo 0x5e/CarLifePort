@@ -45,28 +45,37 @@ TCP 通道——与库自身在 ADB 模式下使用的方式一致：
 ## 构建
 
 ```sh
-./scripts/build.sh   # 构建全部组件
+make all     # 构建全部组件
+make sdk     # 只构建原生库（CarLife SDK）
+make clean   # 删除 dist/ 与 .build/
 ```
 
-`build.sh` 没有参数，也没有部分构建模式：原生库、链接进程、Go 后端与前端在一次运行内全部重建，
-不复用上一次的结果。
+构建是增量的：产物只在自己的输入更新时才重建，改一个文件就只重编那一个；只有 `make clean` 会强制
+全量重建。可运行产物全部在 `dist/`，中间产物在 `.build/`，两者都不进入版本库。
 
-按顺序构建四段。可运行产物全部在 `dist/`，中间产物在 `.build/`，两者都不进入版本库：
+| 目标 | 内容 | 产物 |
+|---|---|---|
+| `make all` | 下列四项，一次运行内完成 | — |
+| `make sdk` | 原生库：protobuf 2.5.0 + CarLife 协议栈 | `dist/libcarlifevehicle.dylib` |
+| `make link` | 链接进程（USB 传输 + 车机协议栈） | `dist/carlife-link` |
+| `make server` | Go 后端 | `dist/carlifed` |
+| `make web` | 前端（playport 原样构建后复制） | `dist/web/` |
+| `make clean` | 删除 `dist/` 与 `.build/` | — |
 
-| 步骤 | 产物 |
-|---|---|
-| 原生库（protobuf 2.5.0 + CarLife 协议栈） | `dist/libcarlifevehicle.dylib` |
-| 链接进程（USB 传输 + 车机协议栈） | `dist/carlife-link` |
-| Go 后端 | `dist/carlifed` |
-| 前端（playport 原样构建后复制） | `dist/web/` |
+首次全量构建可以加 `-j`（`make -j8 all`）并行编译原生库的 69 个源文件。
 
 全部产物放在同一目录：`carlifed` 按自身所在目录查找链接进程与前端，因此整个 `dist/`
 可以移动到其他位置运行。原生库使用 `@rpath` 安装名，链接进程使用 `@loader_path` rpath 定位同级
 目录中的 dylib，二进制中不包含构建路径。
 
-原生库需要编译 protobuf 与 69 个 C++ 源文件，每次运行都重新编译。其中 protobuf 只在首次构建时
-编译并打进 `.build/pb`，它是打了补丁的上游源码包、不随本仓库改动；补丁内容为 3 行，给
-`platform_macros.h` 补上 `__aarch64__` 分支（上游版本不支持 Apple Silicon），其余源文件原样编译。
+原生库的 69 个 C++ 源文件各自编译成 `.build/obj` 下的目标文件，按源文件与头文件的时间戳增量重建
+（编译时用 `-MMD` 记录每个目标文件包含了哪些头文件）。protobuf 安装进 `.build/pb`，只在库文件缺失
+或打补丁后才重新 configure 与编译；它是打了补丁的上游源码包、不随本仓库改动，补丁内容为 3 行，给
+`platform_macros.h` 补上 `__aarch64__` 分支（上游版本不支持 Apple Silicon），补丁脚本为
+`scripts/patch-protobuf.py`，其余源文件原样编译。
+
+`make clean` 保留 `vendor/playport/web/node_modules`：它是前端依赖缓存，删除后下一次构建需要重新
+联网安装。
 
 ## 运行
 

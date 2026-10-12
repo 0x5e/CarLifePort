@@ -137,7 +137,7 @@ func executableDir() string {
 }
 
 // loadConfig reads every knob, defaulting each path to a file next to this binary:
-// scripts/build.sh puts the link program and the web assets in the same directory.
+// the top-level Makefile puts the link program and the web assets in the same directory.
 func loadConfig() config {
 	dir := executableDir()
 	return config{
@@ -167,7 +167,7 @@ func loadConfig() config {
 const usageText = `usage: carlifed
 
 Configuration comes from CL_-prefixed environment variables; there are no flags. Every
-path defaults to a file next to this binary, which is where scripts/build.sh puts it.
+path defaults to a file next to this binary, which is where the Makefile puts it.
 
   CL_ADDR          0.0.0.0:8080            HTTP listen address
   CL_TOKEN         0                       access token the browser client must present
@@ -200,7 +200,7 @@ func main() {
 	cfg := loadConfig()
 
 	if _, err := os.Stat(cfg.webDir); err != nil {
-		warnf(moduleSelf, "%s does not exist; run ./scripts/build.sh to build the browser client", cfg.webDir)
+		warnf(moduleSelf, "%s does not exist; run make to build the browser client", cfg.webDir)
 	}
 
 	var sess *session

@@ -25,10 +25,10 @@ const stopTimeout = 3 * time.Second
 func checkSibling(cfg config) error {
 	info, err := os.Stat(cfg.linkPath)
 	if err != nil {
-		return fmt.Errorf("missing %s, run ./scripts/build.sh first", cfg.linkPath)
+		return fmt.Errorf("missing %s, run make first", cfg.linkPath)
 	}
 	if info.Mode().Perm()&0o111 == 0 {
-		return fmt.Errorf("%s is not executable, run ./scripts/build.sh first", cfg.linkPath)
+		return fmt.Errorf("%s is not executable, run make first", cfg.linkPath)
 	}
 	return nil
 }

@@ -1,9 +1,8 @@
 # carlife-link -- the phone link: USB(AOA) transport + CarLife head-unit protocol stack
 #
-# Links against libcarlifevehicle.dylib, which scripts/build.sh produces (and rebuilds) as
-# part of the full build. The check below only reports when it is missing; building it from
-# here would mean running the whole build from inside itself, and the library is built from
-# the vendored sources, so it never changes while this link does not.
+# Links against libcarlifevehicle.dylib, which `make sdk` in the repository root produces as
+# part of the full build. The library is a prerequisite below, so it is never rebuilt from
+# here and never forces a relink on its own.
 #
 # The transport half (aoa.c, bridge.c) is C and needs libusb; the protocol stack half
 # (main.cpp) is C++ and needs the CarLife headers. Only main.cpp is compiled as C++, but the
@@ -27,12 +26,13 @@ LDLIBS     += $(shell pkg-config --libs libusb-1.0)
 
 TARGET     := $(DIST)/carlife-link
 OBJECTS    := aoa.o bridge.o main.o
+LIBRARY    := $(DIST)/libcarlifevehicle.dylib
 
-.PHONY: all clean native
+.PHONY: all clean
 
 all: $(TARGET)
 
-$(TARGET): $(OBJECTS) native
+$(TARGET): $(OBJECTS) $(LIBRARY)
 	@mkdir -p $(DIST)
 	$(CXX) -o $@ $(OBJECTS) $(LDFLAGS) $(LDLIBS)
 	@echo "Build complete: $@"
@@ -46,9 +46,13 @@ bridge.o: bridge.c aoa.h bridge.h
 main.o: main.cpp protocol.h bridge.h
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-native $(DIST)/libcarlifevehicle.dylib:
-	@test -f $(DIST)/libcarlifevehicle.dylib || \
-	  { echo "$(DIST)/libcarlifevehicle.dylib is missing, run ./scripts/build.sh first" >&2; exit 1; }
+# The library is a prerequisite rather than a phony existence check: this way the target is
+# relinked when the library changes and not on every run. It is built by `make sdk` in the
+# repository root -- building it from here would mean running the whole build from inside
+# this one.
+$(LIBRARY):
+	@echo "$(LIBRARY) is missing, run make sdk in the repository root first" >&2
+	@exit 1
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)
