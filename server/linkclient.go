@@ -114,16 +114,26 @@ func newLinkClient(path string) *linkClient {
 }
 
 // run blocks until ctx is done.
+//
+// The dial is retried on a fixed interval, and the link socket only appears once a phone
+// is attached, so a phone that is not plugged in yet keeps this loop failing for as long
+// as it takes. The line is therefore printed once per outage rather than once per attempt;
+// otherwise the log scrolls while nothing changes.
 func (h *linkClient) run(ctx context.Context) {
+	outageLogged := false
 	for ctx.Err() == nil {
 		conn, err := net.Dial("unix", h.path)
 		if err != nil {
-			infof(moduleLink, "waiting for carlife-link (%v), retrying in %s", err, reconnectInterval)
+			if !outageLogged {
+				infof(moduleLink, "waiting for carlife-link at %s", h.path)
+				outageLogged = true
+			}
 			if !sleepContext(ctx, reconnectInterval) {
 				return
 			}
 			continue
 		}
+		outageLogged = false
 
 		infof(moduleLink, "connected to carlife-link: %s", h.path)
 		h.writeMu.Lock()
@@ -141,7 +151,10 @@ func (h *linkClient) run(ctx context.Context) {
 		}
 		h.writeMu.Unlock()
 		conn.Close()
+		// This line is the outage notice, so the failed dials that follow stay silent
+		// until the link is back.
 		infof(moduleLink, "disconnected from carlife-link, reconnecting")
+		outageLogged = true
 		if h.onState != nil {
 			h.onState(false)
 		}

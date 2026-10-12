@@ -197,6 +197,10 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 三种情况下浏览器都不需要刷新：`carlifed` 常驻，WebSocket 断开后自动重连；会话重建后前端
 会拿到新的编解码参数并重建解码器。
 
+等待期间的重试与等待提示每段只打印一次（`link` 的 `waiting for carlife-link`、`bridge` 的
+`no phone yet, waiting` 与 `device not ready, retrying`）：重试间隔只有 1–2 秒，逐次打印会把
+日志刷满，而这段时间里状态没有变化。与设备的连接建立、断开与失败原因仍然逐次记录。
+
 accessory 模式在手机侧是粘性的，跨重新插拔保留。手机仍处于上一次连接的 accessory 模式时，
 重新握手不会触发系统重新拉起 CarLife App（仅当从常规模式完成一次全新握手时，系统才广播
 `USB_ACCESSORY_ATTACHED`）。这种情况需要先手动复位手机的 USB 模式：

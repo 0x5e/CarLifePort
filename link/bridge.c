@@ -554,13 +554,17 @@ static void on_signal(int sig)
  *
  * Every step is retried rather than treated as fatal, because the phone may still be on its
  * way in: it can be plugged in after this process started, or it can be held by another
- * application that has to let go first. The first attempt prints the device
- * list; later attempts are throttled to one line per 10 s.
+ * application that has to let go first. The first attempt prints the device list; the
+ * "still waiting" lines are printed once so that a phone that is not there yet does not
+ * scroll the log.
  *
  * Returns 0 with *out claimed and open, or -1 if a stop was requested. */
 static int acquire_device(int vid, int pid, struct aoa_device *out)
 {
     unsigned int attempt = 0;
+    int no_device_logged = 0;
+    int not_ready_logged = 0;
+    int device_seen = 0;
 
     for (;;) {
         struct aoa_device dev;
@@ -571,14 +575,17 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
         }
 
         if (aoa_open_target(vid, pid, &dev, &is_accessory, attempt == 0) != 0) {
-            if (attempt == 0 || attempt % 10 == 9) {
-                aoa_log("no phone yet, waiting (attempt %u): plug it in and make sure no other "
-                        "application is using the USB device",
-                        attempt + 1);
+            /* Said once: the phone can stay away for minutes, and repeating this would
+             * scroll the log while nothing changes. */
+            if (!no_device_logged) {
+                aoa_log("no phone yet, waiting: plug it in and make sure no other "
+                        "application is using the USB device");
+                no_device_logged = 1;
             }
             goto retry;
         }
 
+        device_seen = 1;
         aoa_log("found %04x:%04x%s", dev.vid, dev.pid,
                 is_accessory ? "  [already in accessory mode]" : "  [normal mode]");
 
@@ -608,8 +615,11 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
         return 0;
 
     retry:
-        if (attempt > 0 && attempt % 10 == 9) {
-            aoa_log("device not ready, still retrying (attempt %u)", attempt + 1);
+        /* Only a device that was found but could not be used gets this line; with nothing
+         * plugged in, the line above already said what is missing. */
+        if (device_seen && !not_ready_logged) {
+            aoa_log("device not ready, retrying");
+            not_ready_logged = 1;
         }
         sleep(1);
         attempt++;
