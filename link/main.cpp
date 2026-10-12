@@ -92,8 +92,10 @@ static void log_line(const char* fmt, ...)
     va_end(args);
 }
 
-/* For whatever the phone drives on a timer, such as the playback progress bar: worth
- * keeping while a session is being watched live, too repetitive to keep by default. */
+/* For lines that would otherwise repeat what the Go backend already reports: everything
+ * this half forwards as a frame and the backend logs from it, plus whatever the phone
+ * drives on a timer, such as the playback progress bar. Both are worth keeping while the
+ * protocol is being worked on, too repetitive to keep by default. */
 static void log_line_debug(const char* fmt, ...)
 {
     va_list args;
@@ -223,7 +225,7 @@ static void cb_protocol_match(S_PROTOCOL_VERSION_MATCH_SATUS* status)
     uint8_t buffer[4];
     put_be32(buffer, status->matchStatus);
     send_frame(CH_CMD, EV_PROTOCOL_MATCH, buffer, sizeof(buffer));
-    log_line("protocol version match status: %u", status->matchStatus);
+    log_line_debug("protocol version match status: %u", status->matchStatus);
 }
 
 static void cb_md_info(S_MD_INFO* info)
@@ -260,7 +262,7 @@ static void cb_md_info(S_MD_INFO* info)
     json += json_quote(info->btaddress);
     json += "}";
     send_text(EV_MD_INFO, json);
-    log_line("phone device info: %s %s (Android %s)", info->manufacturer.c_str(), info->model.c_str(),
+    log_line_debug("phone device info: %s %s (Android %s)", info->manufacturer.c_str(), info->model.c_str(),
              info->release.c_str());
 }
 
@@ -276,7 +278,7 @@ static void cb_video_encoder_init_done(S_VIDEO_ENCODER_INIT_DONE* info)
     put_be32(buffer + 4, info->height);
     put_be32(buffer + 8, info->frameRate);
     send_frame(CH_CMD, EV_VIDEO_INIT_DONE, buffer, sizeof(buffer));
-    log_line("video encoder ready: %ux%u@%u", info->width, info->height, info->frameRate);
+    log_line_debug("video encoder ready: %ux%u@%u", info->width, info->height, info->frameRate);
 }
 
 static void cb_video_frame_rate_done(S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE* info)
@@ -312,13 +314,13 @@ static void cb_tele_in_calling(void)
 static void cb_screen_on(void)
 {
     send_frame(CH_CMD, EV_SCREEN_ON, NULL, 0);
-    log_line("phone screen on");
+    log_line_debug("phone screen on");
 }
 
 static void cb_screen_off(void)
 {
     send_frame(CH_CMD, EV_SCREEN_OFF, NULL, 0);
-    log_line("phone screen off");
+    log_line_debug("phone screen off");
 }
 
 static void cb_screen_user_present(void)
@@ -329,13 +331,13 @@ static void cb_screen_user_present(void)
 static void cb_foreground(void)
 {
     send_frame(CH_CMD, EV_FOREGROUND, NULL, 0);
-    log_line("CarLife moved to foreground");
+    log_line_debug("CarLife moved to foreground");
 }
 
 static void cb_background(void)
 {
     send_frame(CH_CMD, EV_BACKGROUND, NULL, 0);
-    log_line("CarLife moved to background");
+    log_line_debug("CarLife moved to background");
 }
 
 static void cb_go_to_desktop(void)
@@ -346,19 +348,19 @@ static void cb_go_to_desktop(void)
 static void cb_mic_wakeup(void)
 {
     send_frame(CH_CMD, EV_MIC_WAKEUP, NULL, 0);
-    log_line("voice wakeup");
+    log_line_debug("voice wakeup");
 }
 
 static void cb_mic_end(void)
 {
     send_frame(CH_CMD, EV_MIC_END, NULL, 0);
-    log_line("voice recording ended");
+    log_line_debug("voice recording ended");
 }
 
 static void cb_mic_recog(void)
 {
     send_frame(CH_CMD, EV_MIC_RECOG, NULL, 0);
-    log_line("voice recognition started");
+    log_line_debug("voice recognition started");
 }
 
 static void cb_module_status(S_MODULE_STATUS_LIST_MOBILE* list)
@@ -505,7 +507,7 @@ static void cb_md_authen_response(S_AUTHEN_RESPONSE* response)
 static void cb_md_authen_result(S_MD_AUTHEN_RESULT* result)
 {
     g_authen_result = result->authenResult ? 1 : 0;
-    log_line("phone authentication result: %s", result->authenResult ? "authenticated" : "rejected");
+    log_line_debug("phone authentication result: %s", result->authenResult ? "authenticated" : "rejected");
     send_frame(CH_CMD, EV_AUTHEN_RESULT, &g_authen_result, 1);
 }
 
@@ -549,7 +551,7 @@ static void cb_feature_config_request(void)
     CCarLifeLib::getInstance()->cmdFeatureConfigResponse(&g_feature_config_list);
 
     send_frame(CH_CMD, EV_FEATURE_CONFIG_REQUEST, NULL, 0);
-    log_line("replied to phone feature config request (%d keys, audio over the dedicated "
+    log_line_debug("replied to phone feature config request (%d keys, audio over the dedicated "
              "channel, no content encryption)",
              count);
 }
@@ -577,7 +579,7 @@ static void cb_connect_exception(S_CONNECTION_EXCEPTION* exception)
 static void cb_md_exit(void)
 {
     send_frame(CH_CMD, EV_MD_EXIT, NULL, 0);
-    log_line("CarLife exited on phone");
+    log_line_debug("CarLife exited on phone");
 }
 
 /* ------------------------------------------------------- Audio/video channels */
@@ -589,7 +591,7 @@ static void send_audio_init(uint8_t channel, S_AUDIO_INIT_PARAMETER* param)
     put_be32(buffer + 4, param->channelConfig);
     put_be32(buffer + 8, param->sampleFormat);
     send_frame(channel, EV_AUDIO_INIT, buffer, sizeof(buffer));
-    log_line("channel %u audio params: %u Hz / config %u / format %u", channel, param->sampleRate,
+    log_line_debug("channel %u audio params: %u Hz / config %u / format %u", channel, param->sampleRate,
              param->channelConfig, param->sampleFormat);
 }
 
@@ -830,12 +832,12 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             param.height = get_be32(body + 4);
             param.frameRate = get_be32(body + 8);
             lib->cmdVideoEncoderInit(&param);
-            log_line("requesting video encoding %ux%u@%u", param.width, param.height, param.frameRate);
+            log_line_debug("requesting video encoding %ux%u@%u", param.width, param.height, param.frameRate);
             break;
         }
         case CMD_VIDEO_ENCODER_START:
             lib->cmdVideoEncoderStart();
-            log_line("starting video encoder");
+            log_line_debug("starting video encoder");
             break;
         case CMD_VIDEO_ENCODER_PAUSE:
             lib->cmdVideoEncoderPause();
