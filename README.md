@@ -89,11 +89,11 @@ dist/carlifed
 两个进程的日志输出到同一终端，格式与级别见「日志」。Ctrl-C 停止全部。
 
 浏览器打开 `carlifed` 打印的任意一个地址。默认监听 `0.0.0.0:8080`，启动时列出每张网卡的地址
-（带网卡名）：
+（带网卡名），Docker、虚拟机创建的 `bridge` 网卡不在其中：
 
 ```
 17:08:35.984 INFO  [carlifed]   service started
-17:08:35.984 INFO  [carlifed]   viewer URL   https://127.0.0.1:8080/?token=0
+17:08:35.984 INFO  [carlifed]   viewer URL   https://127.0.0.1:8080/?token=0 (lo0)
 17:08:35.984 INFO  [carlifed]   viewer URL   https://192.168.40.2:8080/?token=0 (en0)
 17:08:35.984 INFO  [carlifed]   certificate  .../self-signed.crt (self-signed: accept the browser warning once)
 ```

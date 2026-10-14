@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -36,7 +37,7 @@ func viewerURLs(addr, token, scheme string) []string {
 
 	addresses := []listenAddress{{host: host}}
 	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
-		addresses = append([]listenAddress{{host: "127.0.0.1"}}, interfaceAddresses()...)
+		addresses = interfaceAddresses()
 	}
 
 	urls := make([]string, 0, len(addresses))
@@ -51,8 +52,10 @@ func viewerURLs(addr, token, scheme string) []string {
 }
 
 // interfaceAddresses returns the usable IPv4 addresses of every interface that is up,
-// annotated with the interface name. Loopback and link-local addresses are skipped: the
-// former is listed separately, the latter is never reachable.
+// annotated with the interface name. Link-local addresses are skipped, never reachable
+// from another machine. The loopback interface is not treated specially, so its URL
+// carries a name like every other one. Docker and VM bridges are skipped: their addresses
+// belong to a network inside this machine that nothing else can route to.
 func interfaceAddresses() []listenAddress {
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -60,7 +63,7 @@ func interfaceAddresses() []listenAddress {
 	}
 	var addresses []listenAddress
 	for _, iface := range interfaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+		if iface.Flags&net.FlagUp == 0 || strings.HasPrefix(iface.Name, "bridge") {
 			continue
 		}
 		addrs, err := iface.Addrs()
@@ -73,7 +76,7 @@ func interfaceAddresses() []listenAddress {
 				continue
 			}
 			ip := network.IP.To4()
-			if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			if ip == nil || ip.IsLinkLocalUnicast() {
 				continue
 			}
 			addresses = append(addresses, listenAddress{host: ip.String(), label: iface.Name})
