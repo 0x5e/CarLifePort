@@ -95,7 +95,6 @@ dist/carlifed
 17:08:35.984 INFO  [carlifed]   service started
 17:08:35.984 INFO  [carlifed]   viewer URL   https://127.0.0.1:8080/?token=0 (lo0)
 17:08:35.984 INFO  [carlifed]   viewer URL   https://192.168.40.2:8080/?token=0 (en0)
-17:08:35.984 INFO  [carlifed]   certificate  .../self-signed.crt (self-signed: accept the browser warning once)
 ```
 
 服务使用 **HTTPS**，证书为启动时生成的自签名证书（缓存在用户缓存目录，生成后复用，

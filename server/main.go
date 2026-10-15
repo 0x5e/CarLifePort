@@ -260,7 +260,6 @@ func main() {
 	for _, entry := range viewerURLs(cfg.addr, cfg.token, "https") {
 		infof(moduleSelf, "viewer URL   %s", entry)
 	}
-	infof(moduleSelf, "certificate  %s (self-signed: accept the browser warning once)", certFile)
 	infof(moduleSelf, "web assets   %s", cfg.webDir)
 	infof(moduleSelf, "socket       %s", defaultSocketPath)
 	infof(moduleSelf, "starting     %s", cfg.linkPath)
