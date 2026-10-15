@@ -910,6 +910,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             action.x = get_be32(body + 4);
             action.y = get_be32(body + 8);
             lib->ctrlTouchAction(&action);
+            log_line_debug("sending touch action %u at %u,%u", action.action, action.x, action.y);
             break;
         }
         case CMD_TOUCH_DOWN: {
@@ -920,6 +921,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchActionDown(&point);
+            log_line_debug("sending touch down at %u,%u", point.x, point.y);
             break;
         }
         case CMD_TOUCH_UP: {
@@ -930,6 +932,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchActionUp(&point);
+            log_line_debug("sending touch up at %u,%u", point.x, point.y);
             break;
         }
         case CMD_TOUCH_MOVE: {
@@ -940,6 +943,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchActionMove(&point);
+            log_line_debug("sending touch move at %u,%u", point.x, point.y);
             break;
         }
         case CMD_TOUCH_SINGLE_CLICK: {
@@ -950,6 +954,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchSigleClick(&point);
+            log_line_debug("sending touch single click at %u,%u", point.x, point.y);
             break;
         }
         case CMD_TOUCH_DOUBLE_CLICK: {
@@ -960,6 +965,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchDoubleClick(&point);
+            log_line_debug("sending touch double click at %u,%u", point.x, point.y);
             break;
         }
         case CMD_TOUCH_LONG_PRESS: {
@@ -970,6 +976,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchLongPress(&point);
+            log_line_debug("sending touch long press at %u,%u", point.x, point.y);
             break;
         }
         case CMD_HARD_KEY: {
@@ -979,7 +986,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_TOUCH_CAR_HARD_KEY_CODE key;
             key.keycode = get_be32(body);
             lib->ctrlTouchCarHardKeyCode(&key);
-            log_line("sending hard key %s (0x%08X)", hard_key_name(key.keycode), key.keycode);
+            log_line_debug("sending hard key %s (0x%08X)", hard_key_name(key.keycode), key.keycode);
             break;
         }
         default:
