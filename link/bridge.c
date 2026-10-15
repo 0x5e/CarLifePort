@@ -419,7 +419,7 @@ static int rx_fill(struct rx_stream *s, unsigned int need)
             return -1;
         }
         st = aoa_read_some(&g_dev, s->buf + s->len, want);
-        if (st == 1) {
+        if (st == AOA_READ_STOPPED) {
             return 1;
         }
         if (st <= 0) {

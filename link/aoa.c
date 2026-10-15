@@ -628,7 +628,7 @@ int aoa_read_some(struct aoa_device *d, unsigned char *dst, unsigned int cap)
         int r;
 
         if (aoa_stop) {
-            return 1;
+            return AOA_READ_STOPPED;
         }
         r = libusb_bulk_transfer(d->handle, d->ep_in, dst, (int)cap, &transferred,
                                  BULK_TIMEOUT_MS);

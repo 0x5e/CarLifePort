@@ -87,10 +87,14 @@ void aoa_close(struct aoa_device *d);
 int aoa_send_message(struct aoa_device *d, unsigned int channel, const unsigned char *msg,
                      unsigned int len);
 
+/* Returned instead of a byte count when a stop was requested. A distinct value rather than
+ * 1, which is also a legal answer: a one-byte read is a byte count like any other. */
+#define AOA_READ_STOPPED (-2)
+
 /* Read from the bulk IN endpoint into dst, blocking until at least one byte arrives.
  * cap must be at least one max-size packet; it is rounded down to a whole number of packets
- * and capped at 16KB. Returns the number of bytes read (> 0), 1 if stop was requested,
- * -1 on error. */
+ * and capped at 16KB. Returns the number of bytes read (> 0), AOA_READ_STOPPED if stop was
+ * requested, -1 on error. */
 int aoa_read_some(struct aoa_device *d, unsigned char *dst, unsigned int cap);
 
 #endif /* CARLIFE_AOA_H */
