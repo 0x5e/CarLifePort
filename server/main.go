@@ -158,9 +158,17 @@ func loadConfig() config {
 		height:     envInt("CL_HEIGHT", 720),
 		webDir:     envString("CL_WEB", filepath.Join(dir, "web")),
 		// Vendor channel number; the phone checks it before it treats the head unit as
-		// authenticated. The default is the one the open source head unit uses for the
-		// after-market channel (CommonParams.VEHICLE_CHANNEL_AFTER_MARKET).
-		channel: envString("CL_CHANNEL", "20000000"),
+		// authenticated. The check the CarLife app applies is: the trimmed string is
+		// non-empty, matches 2 followed by exactly seven digits, and is neither 20000000
+		// (after-market) nor 20000001 (pre-install). Everything else passes, and the value
+		// then selects that vendor's feature set, so the default is the Mercedes-Benz one
+		// (20062100, VehicleChannel.VEHICLE_CHANNEL_DAIMLER in the app). Benz is also the
+		// only channel for which the app additionally requires itself to be the official
+		// build (SignatureVerification.packageSignatureCheck) -- the genuine app passes, and
+		// a repackaged one is already turned away by the check the app runs on the
+		// statistics info itself, whatever the channel is. See README "Head unit
+		// authentication".
+		channel: envString("CL_CHANNEL", "20062100"),
 		// Head unit id. The guide requires it to be unique per head unit; the phone drops
 		// the connection when it sees a repeat.
 		cuid: envString("CL_CUID", "CarLifePort"),
@@ -179,7 +187,7 @@ path defaults to a file next to this binary, which is where the Makefile puts it
   CL_DEVICE_NAME   CarLife                 head unit name shown in the web client
   CL_WIDTH         1280                    requested phone video width
   CL_HEIGHT        720                     requested phone video height
-  CL_CHANNEL       20000000                vendor channel number reported to the phone
+  CL_CHANNEL       20062100                vendor channel number reported to the phone
   CL_CUID          CarLifePort             head unit id reported to the phone
   CL_LOG_LEVEL     info                    debug, info, warn or error; debug adds the
                                            per-frame telemetry, the link's periodic

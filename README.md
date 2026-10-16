@@ -124,7 +124,7 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 | `CL_DEVICE_NAME` | `CarLife` | 前端显示的车机名 |
 | `CL_WIDTH` | `1280` | 请求手机的视频宽度 |
 | `CL_HEIGHT` | `720` | 请求手机的视频高度 |
-| `CL_CHANNEL` | `20000000` | 上报给手机的渠道号（见「车机身份上报」） |
+| `CL_CHANNEL` | `20062100` | 上报给手机的渠道号（见「车机鉴权」） |
 | `CL_CUID` | `CarLifePort` | 上报给手机的车机 id，指南要求每台唯一 |
 | `CL_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
 | `CL_LINK` | `<carlifed 目录>/carlife-link` | 要拉起的链接进程可执行文件 |
@@ -247,9 +247,9 @@ socket，进程退出后 socket 仍被持有，`carlifed` 会连接到一个无�
 
 ```sh
 dist/carlife-link --list      # 只枚举 USB 设备，不操作任何设备
-dist/carlife-link --socket /tmp/carlife-link.sock --channel 20000000 --cuid CarLifePort
+dist/carlife-link --socket /tmp/carlife-link.sock --channel 20062100 --cuid CarLifePort
                               # 完整的链接进程；三个参数必填，取值即 carlifed 的默认值
-dist/carlife-link --socket /tmp/carlife-link.sock --channel 20000000 --cuid CarLifePort -v
+dist/carlife-link --socket /tmp/carlife-link.sock --channel 20062100 --cuid CarLifePort -v
                               # 同上，并保留协议栈内部日志
 ```
 
@@ -307,15 +307,20 @@ unit`。身份上报在协议版本匹配时立即发出（真机抓包顺序如
 并启动车厂相关的定制服务；而手机的 `MSG_CMD_MD_FEATURE_CONFIG_REQUEST(0x00010051)` 只在
 「双方握手认证通过后」才发送。此前真机日志中始终没有 `replied to phone feature config request`
 一行，即这条链未走通：服务端回复了功能定制项（含音频传输方式 `AUDIO_TRANSMISSION_MODE`），
-而手机从未发起请求。
+而手机从未发起请求。渠道号换成合法值之后这条链应当打通，待真机确认。
 
-百度签发的渠道号真值无法获取，此处使用开源车机端的默认值
-`CommonParams.VEHICLE_CHANNEL_AFTER_MARKET = "20000000"`（后装市场渠道），可由 `CL_CHANNEL` 覆盖。
+CarLife Android app 侧的校验规则（逆向所得，`CARLIFE_AUTH.md` 2.2 节）为：去空白后非空、匹配
+`2(\d){7}`（`2` 加恰好 7 位数字），且不等于后装市场渠道 `20000000` 与预装市场渠道 `20000001`，
+不满足即判定车机不合法。这条规则不是白名单——除那两个值外任意 `2xxxxxxxx` 都通过；而渠道号同时
+决定该厂商的功能定制项，所以默认值取映射表里的奔驰值 `20062100`
+（`VehicleChannel.VEHICLE_CHANNEL_DAIMLER`），可由 `CL_CHANNEL` 覆盖。奔驰是唯一会让 app 额外校验
+自身安装包签名的渠道（`SignatureVerification.packageSignatureCheck`），官方包必然通过；重新打包的包
+本来也过不了 app 在收到统计信息时无条件执行的那道签名检查，与渠道号无关。
 `cuid` 按指南要求每台车机唯一（重复会使手机主动断开连接），默认 `CarLifePort`，可由 `CL_CUID` 覆盖。
 
-该上报曾整段用 `#if 0` 停用（当时的判断是发送无效），现已恢复：在未上报任何身份的状态下，手机
-既不主动断开，也并非没有声音的原因，同时静默丢掉了功能定制这条链。恢复后若手机一连上就断开，
-说明手机拒绝该渠道号，退回停用状态即可。
+该上报曾整段用 `#if 0` 停用，当时的判断是发送无效；现已恢复，因为它在未上报任何身份时既不主动
+断开、也不是没有声音的原因，同时静默丢掉了功能定制这条链。改为合法渠道号之前用的是开源车机端的
+默认值 `20000000`，那正好落在 app 的排除项里，手机一连上就断开。
 
 ## 与 playport 前端的接口对齐
 
