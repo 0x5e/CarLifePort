@@ -631,14 +631,33 @@ static void cb_feature_config_request(void)
              count);
 }
 
+/* Names for the play modes, CarlifeMediaPlayMode in guide 13.2 (table 13.2-2). The
+ * identifiers are the ones the protocol itself uses, so a log line can be matched against
+ * the guide. */
+static const char* media_play_mode_name(uint32_t mode)
+{
+    switch (mode) {
+    case 0: return "PLAYMODE_REPEATE_ONE";
+    case 1: return "PLAYMODE_SHUFFLE";
+    case 2: return "PLAYMODE_REPEATE_ALL";
+    default: return "unknown";
+    }
+}
+
 /* What the phone's media player is doing, reported on the command channel: the track
  * whenever it changes and the position once a second while it plays. Neither drives
  * anything, but they are the only way to tell whether the phone's music module is really
- * running - which is what decides whether the audio channel carries anything at all. */
+ * running - which is what decides whether the audio channel carries anything at all.
+ *
+ * All fields of MSG_CMD_MEDIA_INFO (guide 13.2) are logged, under the names the structure
+ * uses, except albumArt: it is a bitmap, so only its length is printed. */
 static void cb_media_info(S_MEDIA_INFO* info)
 {
-    log_line("media info: %s - %s [%s] %u s", info->song.c_str(), info->artist.c_str(),
-             info->source.c_str(), info->duration);
+    log_line("media info: source=%s song=%s artist=%s album=%s albumArt=%u B duration=%us "
+             "playlistNum=%u songId=%s mode=%s (%u)",
+             info->source.c_str(), info->song.c_str(), info->artist.c_str(), info->album.c_str(),
+             (unsigned int)info->albumArt.size(), info->duration, info->playlistNum,
+             info->songId.c_str(), media_play_mode_name(info->mode), info->mode);
 }
 
 static void cb_media_progress_bar(S_MEDIA_PROGRESS_BAR* progress)
