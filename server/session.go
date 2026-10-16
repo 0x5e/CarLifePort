@@ -559,11 +559,21 @@ func (s *session) onAudioEvent(streamType byte, name string, event linkEvent) {
 			sampleRate = 48000
 		}
 		s.mu.Lock()
+		unchanged := s.audioSampleRate[streamType] == sampleRate && s.audioChannels[streamType] == channels
 		s.audioSampleRate[streamType] = sampleRate
 		s.audioChannels[streamType] = channels
 		s.audioSamples[streamType] = 0
 		s.mu.Unlock()
-		infof(moduleSession, "channel %s audio: %d Hz / %d channels", name, sampleRate, channels)
+		// A head unit that does not report the new vehicle version is told the parameters
+		// twice per start: the phone sends them from its older-protocol branch alongside a
+		// stop, and then again unconditionally (MusicAudioHelper.onMusicSocketInit). The
+		// repeat is only a logging nuisance, so it drops to debug level, but it is still
+		// forwarded: the browser builds the stream from this message.
+		if unchanged {
+			debugf(moduleSession, "channel %s audio: %d Hz / %d channels (repeat)", name, sampleRate, channels)
+		} else {
+			infof(moduleSession, "channel %s audio: %d Hz / %d channels", name, sampleRate, channels)
+		}
 		s.hub.BroadcastAudioConfig(streamType, encodeAudioConfig(streamType, sampleRate, channels, name, nil))
 
 	case evAudioData:
