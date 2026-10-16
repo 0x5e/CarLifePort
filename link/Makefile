@@ -5,8 +5,9 @@
 # here and never forces a relink on its own.
 #
 # The transport half (aoa.c, bridge.c) is C and needs libusb; the protocol stack half
-# (main.cpp) is C++ and needs the CarLife headers. Only main.cpp is compiled as C++, but the
-# final link is done with the C++ compiler because the library is C++.
+# (main.cpp) is C++ and needs the CarLife headers, and md_authen.c the RSA check of the
+# phone's authentication response. Only main.cpp is compiled as C++, but the final link is
+# done with the C++ compiler because the library is C++.
 
 ROOT       := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 PB         := $(ROOT)/.build/pb
@@ -25,7 +26,7 @@ LDFLAGS    += -L$(DIST) -lcarlifevehicle -lpthread -Wl,-rpath,@loader_path
 LDLIBS     += $(shell pkg-config --libs libusb-1.0)
 
 TARGET     := $(DIST)/carlife-link
-OBJECTS    := aoa.o bridge.o main.o
+OBJECTS    := aoa.o bridge.o md_authen.o main.o
 LIBRARY    := $(DIST)/libcarlifevehicle.dylib
 
 .PHONY: all clean
@@ -43,7 +44,10 @@ aoa.o: aoa.c aoa.h
 bridge.o: bridge.c aoa.h bridge.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-main.o: main.cpp protocol.h bridge.h
+md_authen.o: md_authen.c md_authen.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+main.o: main.cpp protocol.h bridge.h md_authen.h
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 # The library is a prerequisite rather than a phony existence check: this way the target is

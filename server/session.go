@@ -15,9 +15,9 @@ import (
 const (
 	watchdogInterval    = 2 * time.Second
 	watchdogIdleTimeout = 5 * time.Second
-	// The phone only reports the authentication verdict after the head unit asks for it,
-	// and a verdict can be lost when the phone app was restarted, so the exchange is
-	// repeated until the phone confirms.
+	// The request can be missed -- the phone app may not be listening yet when it is sent --
+	// and the phone's verdict only ever follows a request, so the exchange is repeated until
+	// the phone reports one.
 	authenRetryInterval = 30 * time.Second
 	// Window over which the received video frame rate is measured.
 	fpsReportInterval = 5 * time.Second
@@ -175,30 +175,29 @@ func (s *session) sessionWatchdog(ctx context.Context) {
 			// Space the retries out instead of firing on every tick.
 			s.lastProgress = time.Now()
 		}
-		// Disabled for now: asking the phone to authenticate made it report an
-		// unauthenticated head unit right away, which is worse than never asking. See
-		// requestAuthentication().
-		// retryAuthen := s.linkReady && !s.authenDone && time.Since(s.lastAuthenTry) >= authenRetryInterval
+		retryAuthen := s.linkReady && !s.authenDone && time.Since(s.lastAuthenTry) >= authenRetryInterval
 		s.mu.Unlock()
 		if stalled {
 			warnf(moduleSession, "no CarLife session yet (idle %s), resending protocol version", idle.Truncate(time.Second))
 			s.startHandshake()
 		}
-		// if retryAuthen {
-		// 	s.requestAuthentication()
-		// }
+		if retryAuthen {
+			s.requestAuthentication()
+		}
 		s.reportFrameRate()
 	}
 }
 
-// requestAuthentication starts the head unit authentication exchange. Repeating it is
-// harmless: carlife-link skips the request once the phone has confirmed.
+// requestAuthentication has carlife-link run the head unit authentication exchange
+// (guide 17.1): it sends MSG_CMD_HU_AUTHEN_REQUEST, checks the phone's signed answer
+// against the value it sent, and reports the result back. Repeating it is harmless, and
+// useful after a phone restart: carlife-link skips the request once the phone has
+// confirmed, and a fresh exchange is answered the same way.
 //
-// Not called at the moment. Asking the phone to authenticate made it report an
-// unauthenticated head unit as soon as CarLife started, even though the head unit
-// reported a pass: the phone checks the response for a certificate this project does not
-// have. Never asking leaves the phone on its own timeout instead. Re-enable the two call
-// sites above when there is a real certificate.
+// The two directions of the authentication are independent. This one identifies the phone
+// to the head unit; the phone goes the other way and decides from the channel number in the
+// statistics info whether the head unit is legal (guide 17.2), which is the verdict that
+// arrives here as evAuthenResult.
 func (s *session) requestAuthentication() {
 	s.mu.Lock()
 	s.lastAuthenTry = time.Now()
@@ -278,8 +277,9 @@ func (s *session) onCommandEvent(event linkEvent) {
 			infof(moduleSession, "protocol version match status: %d", binary.BigEndian.Uint32(event.payload))
 		}
 		s.requestVideo()
-		// Disabled for now: see requestAuthentication().
-		// s.requestAuthentication()
+		// The guide has the head unit start the authentication once the versions match,
+		// which is here.
+		s.requestAuthentication()
 
 	case evVideoInitDone:
 		if len(event.payload) < 12 {

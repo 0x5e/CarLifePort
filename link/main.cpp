@@ -14,6 +14,7 @@
 #include "CCarLifeLibWrapper.h"
 #include "CConnectManager.h"
 #include "bridge.h"
+#include "md_authen.h"
 #include "protocol.h"
 
 #include <errno.h>
@@ -488,17 +489,37 @@ static void send_hu_info(void)
 
 /* ------------------------------------------------------- Head unit authentication
  *
- * The phone expects the head unit to run the authentication exchange below; when it
- * never happens, CarLife warns about an unauthenticated head unit and eventually drops
- * the connection:
+ * Two exchanges back to back, one in each direction (guide 17.1 and 17.2):
+ *
  *   head unit --MSG_CMD_HU_AUTHEN_REQUEST (randomValue)--> phone
  *   phone     --MSG_CMD_MD_AUTHEN_RESPONSE (encryptValue)--> head unit
  *   head unit --MSG_CMD_HU_AUTHEN_RESULT (authenResult)--> phone
  *   phone     --MSG_CMD_MD_AUTHEN_RESULT (authenResult)--> head unit
  *
- * The open vehicle library ships no Baidu certificate, so the encrypted value cannot be
- * checked. The head unit is the side that reports the verdict, so the exchange is
- * completed with a positive result. */
+ * The first direction is the one that identifies the phone: it signs the value it is sent
+ * with the RSA private key built into the app, and md_authen.c checks that signature with
+ * the matching public key. The second direction is the phone's verdict on this head unit,
+ * which it reaches from the channel number in the statistics info (see
+ * send_statistic_info). The two results are independent and each is reported as it comes
+ * out; this side does not treat a rejection as fatal (the guide has the head unit drop the
+ * connection when its own check fails, which would make a mistake in the check above look
+ * like a phone that cannot be talked to at all).
+ *
+ * The value that is sent has to carry a version. The phone splits it at the '_' and
+ * compares that part with its own version, segment by segment, before deciding what to
+ * sign; a value without one makes it throw internally and it never answers. It signs the
+ * value unchanged when it is asked for a version at or below its own, which is what the
+ * constant below does against an 8.9.0 app (the app itself substitutes 1.1.0 for its own
+ * version in a debug build). Raise it only up to the version that is actually installed. */
+static const char kAuthenVersion[] = "1.1.0";
+
+/* The value of the outstanding request, kept to check the answer against. It is written on
+ * the backend's thread (the command that starts the exchange) and read on the command
+ * channel's (the answer), hence the lock. */
+static pthread_mutex_t g_authen_lock = PTHREAD_MUTEX_INITIALIZER;
+static std::string g_authen_random;
+
+/* Whether the phone accepted this head unit, as reported by the phone itself */
 static uint8_t g_authen_result = 0;
 
 static void send_authen_request(void)
@@ -509,18 +530,50 @@ static void send_authen_request(void)
     for (size_t i = 0; i < request.randomValue.size(); ++i) {
         request.randomValue[i] = alphabet[rand() % 16];
     }
+    request.randomValue += "_";
+    request.randomValue += kAuthenVersion;
+
+    pthread_mutex_lock(&g_authen_lock);
+    g_authen_random = request.randomValue;
+    pthread_mutex_unlock(&g_authen_lock);
+
     if (CCarLifeLib::getInstance()->cmdHuAuthenRequest(&request) < 0) {
         log_line_error("failed to send head unit authentication request");
         return;
     }
-    log_line("sent head unit authentication request");
+    log_line("sent head unit authentication request (randomValue=%s)", request.randomValue.c_str());
 }
 
 static void cb_md_authen_response(S_AUTHEN_RESPONSE* response)
 {
-    log_line("phone authentication response received (%u bytes)", (unsigned int)response->encryptValue.size());
+    pthread_mutex_lock(&g_authen_lock);
+    std::string expected = g_authen_random;
+    pthread_mutex_unlock(&g_authen_lock);
+
+    char recovered[MD_AUTHEN_MAX_MESSAGE + 1];
+    int length = md_authen_recover(response->encryptValue.c_str(), recovered, sizeof(recovered));
+    bool verified = !expected.empty() && length >= 0 && expected.compare(recovered) == 0;
+
+    if (verified) {
+        log_line("phone authenticated: the response decrypts to the value that was sent (%d bytes)",
+                 length);
+    } else if (expected.empty()) {
+        log_line_warn("phone sent an authentication response without a request outstanding (%u bytes)",
+                      (unsigned int)response->encryptValue.size());
+    } else if (length < 0) {
+        log_line_warn("phone authentication failed: the response is not a Base64 RSA-1024 signature "
+                      "with PKCS#1 padding (%u bytes)",
+                      (unsigned int)response->encryptValue.size());
+    } else {
+        /* The phone rewrites the version part of the value when it is asked for a version
+         * above its own, so a mismatch here usually means kAuthenVersion is too high. */
+        log_line_warn("phone authentication failed: the response decrypts to \"%s\", not the \"%s\" "
+                      "that was sent",
+                      recovered, expected.c_str());
+    }
+
     S_HU_AUTHEN_RESULT result;
-    result.authenResult = true;
+    result.authenResult = verified;
     if (CCarLifeLib::getInstance()->cmdHuAuthenResult(&result) < 0) {
         log_line_error("failed to send head unit authentication result");
     }

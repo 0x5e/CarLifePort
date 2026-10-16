@@ -187,7 +187,7 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 |---|---|
 | `debug` | 以上全部，外加周期性遥测（实测帧率、USB 传输的每通道转发统计、手机的播放进度）、逐次下发的按键与触摸，以及协议栈转交后端后重复记下的那一份事件日志 |
 | `info` | 状态变化：握手推进、会话开始与结束、客户端接入、链接进程重建 |
-| `warn` | 可以继续运行但需要留意：令牌不符、握手停滞、手机拒绝认证、帧率被限制、设备就绪前的握手重试、被丢弃的帧或连接、未识别的通道 tag |
+| `warn` | 可以继续运行但需要留意：令牌不符、握手停滞、手机拒绝认证、车机对手机的鉴权校验未通过、帧率被限制、设备就绪前的握手重试、被丢弃的帧或连接、未识别的通道 tag |
 | `error` | 失败并中断：USB 与本地 socket 的读写失败、内存与线程创建失败、绑定或监听失败、六条通道建立失败、链接进程无法启动 |
 
 级别在源头标记，而不是由 `carlifed` 按内容识别：链接进程在自身时间戳后写入 `DEBUG` / `WARN` /
@@ -260,24 +260,36 @@ dist/carlife-link --socket /tmp/carlife-link.sock --channel 20000000 --cuid CarL
 实际帧率由手机决定，后端以 debug 级别每 5 秒打印一行实测值（`video: 29.8 fps received ...`），
 手机限制帧率时以 info 级别打印（`phone limited the frame rate to 30`）。
 
-### 车机鉴权（当前停用）
+### 车机鉴权
 
-协议中存在这条流程，未走完的手机侧会提示「未认证的车机端」并在数分钟后断开连接：
+指南第 17 章把「安全认证」拆成方向相反的两段，两段都已实现，且互不依赖：
 
 ```
-车机 --MSG_CMD_HU_AUTHEN_REQUEST(randomValue)--> 手机
-手机 --MSG_CMD_MD_AUTHEN_RESPONSE(encryptValue)--> 车机
-车机 --MSG_CMD_HU_AUTHEN_RESULT(authenResult)--> 手机
-手机 --MSG_CMD_MD_AUTHEN_RESULT(authenResult)--> 车机
+车机 --MSG_CMD_HU_AUTHEN_REQUEST(0x00018048, randomValue)--> 手机   ┐
+手机 --MSG_CMD_MD_AUTHEN_RESPONSE(0x00010049, encryptValue)--> 车机  │ 17.1 车机验证手机
+车机 --MSG_CMD_HU_AUTHEN_RESULT(0x0001804A, authenResult)--> 手机   ┘
+手机 --MSG_CMD_MD_AUTHEN_RESULT(0x0001004B, authenResult)--> 车机    17.2 手机验证车机
 ```
 
-该流程曾由 `carlifed` 在协议版本匹配后发起（确认前每 30 秒重发一次），但真机上发送后立即被判为
-未认证，因此调用点已注释停用（`server/session.go` 的 `requestAuthentication()`，恢复时放开注释
-即可）。原因是手机校验的是 `encryptValue` 中的证书，开源车机库没有百度签发的证书，自行上报的
-`authenResult` 无法通过校验。
+**17.1（车机验证手机）** 由 `carlifed` 在协议版本匹配后发起，手机确认前每 30 秒重发一次。
+`randomValue` 是 16 个十六进制字符的随机串 + `_` + 版本号（`link/main.cpp` 的 `kAuthenVersion`，
+当前 `1.1.0`）。后缀不能省：手机端按 `_` 切出版本段、逐段与自身版本比较，没有 `_` 会在内部抛异常
+并被外层 `catch` 吞掉，**整条 `MSG_CMD_MD_AUTHEN_RESPONSE` 都不会发出**。要求低于自身版本时
+（`1.1.0` 对 8.9.0）手机把收到的字符串原样签回，车机因此可以直接与发出的值比对；要求高于自身版本
+时手机会改写成 `<随机串>_00.00.00` 再签回，比对必然失败——这是 `kAuthenVersion` 不能随手调高的原因。
 
-链接进程协议栈侧的鉴权收发能力保留未动（两个回调与 `CMD_AUTHEN_REQUEST` 分支）：Go 侧不发送
-该命令，协议栈便不会主动发起鉴权。本节只涉及鉴权，身份上报见下一节。
+校验在 `link/md_authen.c`：用手机端内置私钥对应公钥对 `encryptValue` 做 RSA 公钥运算
+（1024 位、e=65537、PKCS#1 v1.5），比对还原出的明文。公钥不在开源车机库里，取自手机端 APK
+（逆向报告 `CARLIFE_AUTH.md` 1.1 节；该 apk 内没有公钥文件，公钥只存在于车机端）。大整数是自己写的
+32 位字长实现，模幂用移位累加、每步条件减法约减（指数是 65537，一次校验 18 次模乘，约 1 毫秒），
+只做公钥运算，不引入密码库依赖。
+失败时指南要求车机主动断开，这里只上报 `authenResult=false` 并记一条 `warn`：校验代码自身出错
+不该表现成「手机完全连不上」，先让链路跑起来、日志留下证据。
+
+**17.2（手机验证车机）** 依赖的是渠道号，见下一节；手机把结论放在 `MSG_CMD_MD_AUTHEN_RESULT`
+回给车机，`carlifed` 收到后记 `phone authenticated this head unit` 或 `phone rejected this head
+unit`。身份上报在协议版本匹配时立即发出（真机抓包顺序如此），早于 17.1 完成；手机端对两者的处理
+互不依赖，指南里的先后顺序不影响结果。
 
 ### 车机身份上报
 
@@ -365,10 +377,12 @@ dist/carlife-link --socket /tmp/carlife-link.sock --channel 20000000 --cuid CarL
 - 麦克风上行未接通：CarLife 的语音通道由手机发起，服务端不向浏览器请求麦克风。
 - 视频只有 H.264；音频按 16 位 PCM 处理。
 - 帧率由手机决定：请求 60 fps 时手机可能仍按 30 fps 编码，后端只能报告实测值。
-- 车机主动发起的鉴权（17.1）仍停用：发送后会被手机立即判定未认证，因为手机校验的是 `encryptValue`
-  中的证书，而开源库没有百度签发的证书。身份上报（17.2）已恢复，渠道号使用开源车机端的默认值，
-  手机是否接受该值只能上机验证。手机侧的认证判定要彻底通过，只能获取百度签发的真值、逆向手机端
-  APK，或改用官方认证过的车机端实现。
+- 双向鉴权已实现但只经离线验证：`randomValue` 的版本段取值按逆向出的算法复核过，`encryptValue` 的
+  校验用报告里公布的密文向量和 300 组自建向量测过，**尚未在真机上走完一轮**。车机验证失败时按指南
+  本应断开，这里选择只上报不断开（见「车机鉴权」）。
+- 手机侧 `encryptValue` 还有一条 `"2.0;"` 前缀的 native 分支（`libencryption.so`，用 APK 签名派生
+  校验码，不用 RSA），本实现不产生该前缀，因此不受影响；若将来把 `kAuthenVersion` 换成 `2.0;…`
+  形式，校验会失败。
 - 重新插拔需要重建 `carlife-link`，`carlifed` 会自动处理；手工单独运行链路时需要自行重启。
 - accessory 模式在手机侧粘性保留，在手动复位前无法通过重新握手拉起 CarLife App
   （`adb shell svc usb setFunctions`，见「设备接入时机」）。
