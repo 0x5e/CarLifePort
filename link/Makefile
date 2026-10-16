@@ -4,10 +4,10 @@
 # part of the full build. The library is a prerequisite below, so it is never rebuilt from
 # here and never forces a relink on its own.
 #
-# The transport half (aoa.c, bridge.c) is C and needs libusb; the protocol stack half
-# (main.cpp) is C++ and needs the CarLife headers, and md_authen.c the RSA check of the
-# phone's authentication response. Only main.cpp is compiled as C++, but the final link is
-# done with the C++ compiler because the library is C++.
+# The transport half (aoa.c, bridge.c) is C and needs libusb; md_authen.c is C and needs
+# libcrypto for the RSA check of the phone's authentication response; the protocol stack
+# half (main.cpp) is C++ and needs the CarLife headers. Only main.cpp is compiled as C++, but
+# the final link is done with the C++ compiler because the library is C++.
 
 ROOT       := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 PB         := $(ROOT)/.build/pb
@@ -20,10 +20,10 @@ DIST       := $(ROOT)/dist
 
 CC         ?= cc
 CXX        ?= clang++
-CFLAGS     += -O2 -g -Wall -Wextra -std=gnu11 $(shell pkg-config --cflags libusb-1.0)
+CFLAGS     += -O2 -g -Wall -Wextra -std=gnu11 $(shell pkg-config --cflags libusb-1.0 libcrypto)
 CXXFLAGS   += -std=gnu++11 -O2 -Wall -Wextra -I$(CARLIFE)/include -I$(PB)/include
 LDFLAGS    += -L$(DIST) -lcarlifevehicle -lpthread -Wl,-rpath,@loader_path
-LDLIBS     += $(shell pkg-config --libs libusb-1.0)
+LDLIBS     += $(shell pkg-config --libs libusb-1.0 libcrypto)
 
 TARGET     := $(DIST)/carlife-link
 OBJECTS    := aoa.o bridge.o md_authen.o main.o

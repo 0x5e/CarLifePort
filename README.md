@@ -280,9 +280,11 @@ dist/carlife-link --socket /tmp/carlife-link.sock --channel 20062100 --cuid CarL
 
 校验在 `link/md_authen.c`：用手机端内置私钥对应公钥对 `encryptValue` 做 RSA 公钥运算
 （1024 位、e=65537、PKCS#1 v1.5），比对还原出的明文。公钥不在开源车机库里，取自手机端 APK
-（逆向报告 `CARLIFE_AUTH.md` 1.1 节；该 apk 内没有公钥文件，公钥只存在于车机端）。大整数是自己写的
-32 位字长实现，模幂用移位累加、每步条件减法约减（指数是 65537，一次校验 18 次模乘，约 1 毫秒），
-只做公钥运算，不引入密码库依赖。
+（逆向报告 `CARLIFE_AUTH.md` 1.1 节；该 apk 内没有公钥文件，公钥只存在于车机端）。校验的两步都走
+libcrypto：`EVP_DecodeUpdate` 解码协议里的 Base64，`EVP_PKEY_verify_recover` 配 `RSA_PKCS1_PADDING`
+一次完成公钥运算与 PKCS#1 去填充——块内填充不合法或块不小于模数都直接失败。公钥在源码里就是那份 PEM
+字符串（与逆向项目 `keys/` 下的文件逐字节相同），由 `PEM_read_bio_PUBKEY` 读入；全程只加载公钥，
+不涉及私钥材料。构建 link 因此需要 OpenSSL 3（Homebrew `openssl@3`，由 `pkg-config libcrypto` 定位）。
 失败时指南要求车机主动断开，这里只上报 `authenResult=false` 并记一条 `warn`：校验代码自身出错
 不该表现成「手机完全连不上」，先让链路跑起来、日志留下证据。
 
