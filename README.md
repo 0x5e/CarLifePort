@@ -121,7 +121,6 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 | `CL_TOKEN` | `0` | 浏览器访问令牌 |
 | `CL_FPS` | `60` | 请求手机使用的帧率 |
 | `CL_WEB` | `<carlifed 目录>/web` | 前端静态资源目录 |
-| `CL_DEVICE_NAME` | `CarLife` | 前端显示的车机名 |
 | `CL_WIDTH` | `1280` | 请求手机的视频宽度 |
 | `CL_HEIGHT` | `720` | 请求手机的视频高度 |
 | `CL_CHANNEL` | `20062100` | 上报给手机的渠道号（见「车机鉴权」） |
@@ -131,7 +130,7 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 
 `CL_LINK` / `CL_WEB` 按给定值使用，相对路径相对于当前工作目录。监听地址、访问令牌、帧率与
 分辨率以外的行为不可配置：服务总是使用自签名证书的 HTTPS，总是拉起并重启链接进程，链接进程
-监听的 Unix socket 固定为 `/tmp/carlife-link.sock`。
+监听的 Unix socket 固定为 `/tmp/carlife-link.sock`；前端显示的车机名取本机 hostname。
 
 链接进程由 `carlifed` 组装参数拉起（`--socket` / `--channel` / `--cuid`），其全部命令行参数如下：
 

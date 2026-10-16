@@ -109,6 +109,17 @@ func envInt(name string, fallback int) int {
 	return parsed
 }
 
+// hostName returns the machine's hostname, the head unit name the web client shows. The
+// fallback only matters if the lookup fails, which it does not in practice; it keeps the
+// browser from showing an empty name.
+func hostName() string {
+	name, err := os.Hostname()
+	if err != nil || name == "" {
+		return "CarLife"
+	}
+	return name
+}
+
 // config is everything carlifed can be told to do. It comes from CL_-prefixed environment
 // variables and from nothing else: there are no command-line flags, so whatever started
 // carlifed (a terminal, a launch agent, another script) configures it the same way.
@@ -152,8 +163,11 @@ func loadConfig() config {
 		token: envString("CL_TOKEN", "0"),
 		// Requested frame rate; the phone may cap it and reports the rate it accepted in
 		// the log, so lower this if 60 is not accepted.
-		fps:        envInt("CL_FPS", 60),
-		deviceName: envString("CL_DEVICE_NAME", "CarLife"),
+		fps: envInt("CL_FPS", 60),
+		// The head unit name the web client shows. It is this machine's hostname rather
+		// than a knob: on the target device the hostname is the name the user gave it, and
+		// a name that matches the machine is easier to recognize than a fixed one.
+		deviceName: hostName(),
 		width:      envInt("CL_WIDTH", 1280),
 		height:     envInt("CL_HEIGHT", 720),
 		webDir:     envString("CL_WEB", filepath.Join(dir, "web")),
@@ -184,7 +198,6 @@ path defaults to a file next to this binary, which is where the Makefile puts it
   CL_TOKEN         0                       access token the browser client must present
   CL_FPS           60                      frame rate requested from the phone
   CL_WEB           <binary dir>/web        static web asset directory
-  CL_DEVICE_NAME   CarLife                 head unit name shown in the web client
   CL_WIDTH         1280                    requested phone video width
   CL_HEIGHT        720                     requested phone video height
   CL_CHANNEL       20062100                vendor channel number reported to the phone
