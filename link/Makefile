@@ -47,7 +47,7 @@ bridge.o: bridge.c aoa.h bridge.h
 md_authen.o: md_authen.c md_authen.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-main.o: main.cpp protocol.h bridge.h md_authen.h
+main.o: main.cpp protocol.h bridge.h md_authen.h log.h
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 # The library is a prerequisite rather than a phony existence check: this way the target is

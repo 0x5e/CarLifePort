@@ -14,6 +14,7 @@
 #include "CCarLifeLibWrapper.h"
 #include "CConnectManager.h"
 #include "bridge.h"
+#include "log.h"
 #include "md_authen.h"
 #include "protocol.h"
 
@@ -75,6 +76,9 @@ static void log_vline(const char* level, const char* fmt, va_list args)
     time_t seconds = tv.tv_sec;
     localtime_r(&seconds, &tm_now);
 
+    /* One line at a time: the six channel threads, the USB loop and the backend thread all
+     * log here, and the line is written piece by piece. */
+    aoa_log_lock();
     fprintf(stderr, "[%02d:%02d:%02d.%03d] ", tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec,
             (int)(tv.tv_usec / 1000));
     if (level != NULL) {
@@ -84,6 +88,7 @@ static void log_vline(const char* level, const char* fmt, va_list args)
     vfprintf(stderr, fmt, args);
     fputc('\n', stderr);
     fflush(stderr);
+    aoa_log_unlock();
 }
 
 /* The format attribute is what makes the compiler check the arguments against the format

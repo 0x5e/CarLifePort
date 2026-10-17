@@ -10,7 +10,9 @@
  * calls it, so it is not implemented.
  */
 #include "aoa.h"
+#include "log.h"
 
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +53,19 @@ static const char *const kIdent[6] = {
 
 static libusb_context *g_ctx = NULL;
 
+/* Guards every stderr write in the process; see aoa_log_lock in aoa.h. */
+static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void aoa_log_lock(void)
+{
+    pthread_mutex_lock(&g_log_lock);
+}
+
+void aoa_log_unlock(void)
+{
+    pthread_mutex_unlock(&g_log_lock);
+}
+
 /* Shared body of the aoa_log* functions. The level marker is written right after the
  * timestamp, which is where the Go backend looks for it when it relays these lines: it
  * becomes the line's level in the backend's own level column, and a line marked DEBUG is
@@ -63,6 +78,7 @@ static void aoa_vlog(const char *level, const char *fmt, va_list ap)
 
     localtime_r(&now, &tmv);
     strftime(ts, sizeof(ts), "%H:%M:%S", &tmv);
+    aoa_log_lock();
     fprintf(stderr, "[%s] ", ts);
     if (level != NULL) {
         fprintf(stderr, "%s ", level);
@@ -74,6 +90,7 @@ static void aoa_vlog(const char *level, const char *fmt, va_list ap)
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     fflush(stderr);
+    aoa_log_unlock();
 }
 
 void aoa_log(const char *fmt, ...)
