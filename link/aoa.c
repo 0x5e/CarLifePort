@@ -292,6 +292,9 @@ static const char *error_hint(int rc)
     if (rc == LIBUSB_ERROR_NO_DEVICE) {
         return "(device is gone: the phone may have just re-enumerated)";
     }
+    if (rc == LIBUSB_ERROR_IO) {
+        return "(the endpoint failed: the phone has dropped the accessory connection)";
+    }
     return "";
 }
 
@@ -653,7 +656,9 @@ int aoa_read_some(struct aoa_device *d, unsigned char *dst, unsigned int cap)
             continue; /* periodic timeout, let aoa_stop decide whether to exit */
         }
         if (r != 0) {
-            aoa_log_error("USB read failed: %s %s", libusb_error_name(r), error_hint(r));
+            const char *hint = error_hint(r);
+            aoa_log_error("USB read failed: %s%s%s; the link stops and the backend rebuilds it",
+                          libusb_error_name(r), hint[0] != '\0' ? " " : "", hint);
             return -1;
         }
         if (transferred > 0) {
