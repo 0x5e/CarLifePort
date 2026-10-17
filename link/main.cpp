@@ -1253,7 +1253,7 @@ static void usage(const char* program)
             "  --vid <0xXXXX>     target device VID (default: pick a phone)\n"
             "  --pid <0xXXXX>     target device PID (default: pick a phone)\n"
             "  --list             list the USB devices and exit, without touching any device\n"
-            "  -q, --quiet        do not print this process's runtime logs\n"
+            "  -q, --quiet        do not print the protocol stack's runtime logs\n"
             "  -v, --verbose      also emit the protocol stack's internal logs (discarded by default)\n"
             "  -h, --help         show this help\n"
             "\n"
@@ -1336,7 +1336,7 @@ int main(int argc, char** argv)
     /* The transport half comes first: its six ports have to exist before the library
      * connects, and it waits here until a phone is plugged in. bridge_start() also
      * installs the SIGINT/SIGTERM handler that stops both halves. */
-    if (bridge_start(channel_host, vid, pid, g_quiet) != 0) {
+    if (bridge_start(channel_host, vid, pid) != 0) {
         return 1;
     }
 

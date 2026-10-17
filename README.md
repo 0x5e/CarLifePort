@@ -137,7 +137,7 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 | `--host <address>` | `127.0.0.1` | 六条本地通道端口的监听地址 |
 | `--vid` / `--pid` | 自动挑选 | 指定目标设备的 VID / PID |
 | `--list` | 关 | 只枚举 USB 设备，不操作任何设备 |
-| `-q` / `--quiet` | 关 | 不打印运行日志 |
+| `-q` / `--quiet` | 关 | 不打印协议栈的运行日志 |
 | `-v` / `--verbose` | 关 | 额外输出协议栈内部日志（默认丢弃） |
 
 三个必填参数的取值只来自 `carlifed`（渠道号是 `CL_CHANNEL`，车机 id 取本机 host uuid，socket 路径

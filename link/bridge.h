@@ -25,7 +25,7 @@ int bridge_list_devices(void);
  * started. Also installs the process's SIGINT/SIGTERM handler (sets the transport stop
  * flag) and ignores SIGPIPE. Returns 0 on success, 1 if the device or the ports could not
  * be obtained. */
-int bridge_start(const char *host, int vid, int pid, int quiet);
+int bridge_start(const char *host, int vid, int pid);
 
 /* Forward frames between USB and the six local channels until the link drops or a stop was
  * requested. Returns 0 for a clean stop and -1 when the link failed, which means the

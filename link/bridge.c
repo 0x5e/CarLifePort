@@ -74,7 +74,6 @@ struct channel {
 static struct channel g_ch[AOA_CHANNEL_COUNT + 1]; /* index 1..6 */
 static struct aoa_device g_dev;
 static pthread_mutex_t g_usb_tx_lock = PTHREAD_MUTEX_INITIALIZER;
-static int g_quiet = 0;
 static volatile int g_busy_threads = 0;
 
 struct rx_arg {
@@ -517,9 +516,6 @@ static int usb_rx_loop(void)
          * second and buries the one-off events that matter. The per-channel counters in struct
          * channel are still updated, and an unroutable frame already warns as it is dropped. */
 #if 0
-        if (g_quiet) {
-            continue;
-        }
         for (i = 1; i <= AOA_CHANNEL_COUNT; i++) {
             tx_sum += g_ch[i].tx_frames;
             rx_sum += g_ch[i].rx_frames;
@@ -729,11 +725,10 @@ int bridge_list_devices(void)
     return 0;
 }
 
-int bridge_start(const char *host, int vid, int pid, int quiet)
+int bridge_start(const char *host, int vid, int pid)
 {
     pthread_t tid;
 
-    g_quiet = quiet;
     init_channels();
 
     /* The stop flag the transport loop watches is the process's only "stop" signal, so
