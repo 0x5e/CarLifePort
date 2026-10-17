@@ -86,7 +86,10 @@ static void log_vline(const char* level, const char* fmt, va_list args)
     fflush(stderr);
 }
 
-static void log_line(const char* fmt, ...)
+/* The format attribute is what makes the compiler check the arguments against the format
+ * string: without it a mismatched %u or a missing argument compiles silently and only shows
+ * up as a wrong number in the log. */
+__attribute__((format(printf, 1, 2))) static void log_line(const char* fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
@@ -98,7 +101,7 @@ static void log_line(const char* fmt, ...)
  * this half forwards as a frame and the backend logs from it, plus whatever the phone
  * drives on a timer, such as the playback progress bar. Both are worth keeping while the
  * protocol is being worked on, too repetitive to keep by default. */
-static void log_line_debug(const char* fmt, ...)
+__attribute__((format(printf, 1, 2))) static void log_line_debug(const char* fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
@@ -109,7 +112,7 @@ static void log_line_debug(const char* fmt, ...)
 /* Something did not work but the link keeps running: a step of the bring-up loop that will
  * be retried, a frame or a connection that had to be dropped, an event this half does not
  * know. Anything a failure leaves behind on the way out is an error instead. */
-static void log_line_warn(const char* fmt, ...)
+__attribute__((format(printf, 1, 2))) static void log_line_warn(const char* fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
@@ -119,7 +122,7 @@ static void log_line_warn(const char* fmt, ...)
 
 /* A failure: the operation was abandoned, or the link cannot continue and is about to be
  * rebuilt by the backend. */
-static void log_line_error(const char* fmt, ...)
+__attribute__((format(printf, 1, 2))) static void log_line_error(const char* fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
@@ -248,7 +251,6 @@ static void cb_protocol_match(S_PROTOCOL_VERSION_MATCH_SATUS* status)
     uint8_t buffer[4];
     put_be32(buffer, status->matchStatus);
     send_frame(CH_CMD, EV_PROTOCOL_MATCH, buffer, sizeof(buffer));
-    log_line_debug("protocol version match status: %u", status->matchStatus);
 }
 
 static void cb_md_info(S_MD_INFO* info)
@@ -285,8 +287,6 @@ static void cb_md_info(S_MD_INFO* info)
     json += json_quote(info->btaddress);
     json += "}";
     send_text(EV_MD_INFO, json);
-    log_line_debug("phone device info: %s %s (Android %s)", info->manufacturer.c_str(), info->model.c_str(),
-             info->release.c_str());
 }
 
 static void cb_md_bt_pair_info(S_BT_PAIR_INFO* info)
@@ -301,7 +301,7 @@ static void cb_video_encoder_init_done(S_VIDEO_ENCODER_INIT_DONE* info)
     put_be32(buffer + 4, info->height);
     put_be32(buffer + 8, info->frameRate);
     send_frame(CH_CMD, EV_VIDEO_INIT_DONE, buffer, sizeof(buffer));
-    log_line_debug("video encoder ready: %ux%u@%u", info->width, info->height, info->frameRate);
+    log_line_debug("video encoder ready at %ux%u, %u fps", info->width, info->height, info->frameRate);
 }
 
 static void cb_video_frame_rate_done(S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE* info)
@@ -309,7 +309,7 @@ static void cb_video_frame_rate_done(S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE* inf
     uint8_t buffer[4];
     put_be32(buffer, info->frameRate);
     send_frame(CH_CMD, EV_VIDEO_FPS_DONE, buffer, sizeof(buffer));
-    log_line("frame rate changed: %u", info->frameRate);
+    log_line("frame rate changed to %u fps", info->frameRate);
 }
 
 static void cb_tele_state(uint8_t state)
@@ -686,7 +686,7 @@ static void send_audio_init(uint8_t channel, S_AUDIO_INIT_PARAMETER* param)
     put_be32(buffer + 4, param->channelConfig);
     put_be32(buffer + 8, param->sampleFormat);
     send_frame(channel, EV_AUDIO_INIT, buffer, sizeof(buffer));
-    log_line_debug("channel %u audio params: %u Hz / config %u / format %u", channel, param->sampleRate,
+    log_line_debug("audio channel %u: %u Hz, channelConfig=%u, sampleFormat=%u", channel, param->sampleRate,
              param->channelConfig, param->sampleFormat);
 }
 
@@ -791,7 +791,7 @@ static void* cmd_receive_thread(void*)
 
     while (lib->cmdReceiveOperation() != -1) {
     }
-    log_line("command channel receive thread exiting");
+    log_line("command channel receiver stopped");
     return NULL;
 }
 
@@ -803,7 +803,7 @@ static void* video_receive_thread(void*)
 
     while (lib->videoReceiveOperation() != -1) {
     }
-    log_line("video channel receive thread exiting");
+    log_line("video channel receiver stopped");
     return NULL;
 }
 
@@ -819,7 +819,7 @@ static void* media_receive_thread(void*)
 
     while (lib->mediaReceiveOperation() != -1) {
     }
-    log_line("audio channel receive thread exiting");
+    log_line("audio channel receiver stopped");
     return NULL;
 }
 
@@ -832,7 +832,7 @@ static void* tts_receive_thread(void*)
 
     while (lib->ttsReceiveOperation() != -1) {
     }
-    log_line("navigation TTS channel receive thread exiting");
+    log_line("navigation TTS channel receiver stopped");
     return NULL;
 }
 
@@ -845,7 +845,7 @@ static void* vr_receive_thread(void*)
 
     while (lib->vrReceiveOperation() != -1) {
     }
-    log_line("voice channel receive thread exiting");
+    log_line("voice channel receiver stopped");
     return NULL;
 }
 
@@ -856,7 +856,7 @@ static void* ctrl_receive_thread(void*)
 
     while (lib->ctrlReceiveOperation() != -1) {
     }
-    log_line("control channel receive thread exiting");
+    log_line("control channel receiver stopped");
     return NULL;
 }
 
@@ -966,7 +966,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             send_authen_request();
             break;
         default:
-            log_line_warn("unknown command channel tag=%u", tag);
+            log_line_warn("ignoring a message with unknown command channel tag 0x%02X", (unsigned)tag);
             break;
         }
         return;
@@ -1063,7 +1063,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             break;
         }
         default:
-            log_line_warn("unknown control channel tag=%u", tag);
+            log_line_warn("ignoring a message with unknown control channel tag 0x%02X", (unsigned)tag);
             break;
         }
         return;
@@ -1078,7 +1078,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             lib->sendVRRecordData((u8*)(body + 4), body_length - 4, timestamp);
             return;
         }
-        log_line_warn("unknown voice channel tag=%u", tag);
+        log_line_warn("ignoring a message with unknown voice channel tag 0x%02X", (unsigned)tag);
     }
 }
 
@@ -1111,7 +1111,9 @@ static void serve_client(int fd)
         uint8_t channel = header[0];
         uint32_t payload_length = get_be32(header + 1);
         if (payload_length == 0 || payload_length > CL_MAX_PAYLOAD) {
-            log_line_warn("invalid frame received: channel=%u length=%u", channel, payload_length);
+            log_line_warn("dropping the backend connection: it sent a frame of %u bytes on channel %u, outside "
+                          "1..%u",
+                          payload_length, (unsigned)channel, (unsigned)CL_MAX_PAYLOAD);
             break;
         }
         payload.resize(payload_length);
