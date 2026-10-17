@@ -170,7 +170,8 @@ func (h *linkClient) readLoop(conn net.Conn) {
 		channel := header[0]
 		length := binary.BigEndian.Uint32(header[1:])
 		if length == 0 || length > maxFramePayload {
-			warnf(moduleLink, "carlife-link sent an invalid frame: channel=%d length=%d", channel, length)
+			warnf(moduleLink, "carlife-link sent a frame of %d bytes on channel %d, outside 1..%d; closing the connection",
+				length, channel, maxFramePayload)
 			return
 		}
 		payload := make([]byte, length)

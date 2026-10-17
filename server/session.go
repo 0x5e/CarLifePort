@@ -203,7 +203,8 @@ func (s *session) requestAuthentication() {
 	s.lastAuthenTry = time.Now()
 	s.mu.Unlock()
 	if err := s.link.sendAuthenRequest(); err != nil {
-		errorf(moduleSession, "failed to start head unit authentication: %v", err)
+		errorf(moduleSession, "failed to start head unit authentication: %v; the phone keeps this head unit unauthenticated",
+			err)
 		return
 	}
 	infof(moduleSession, "running head unit authentication exchange (retry every %s until the phone confirms)",
@@ -274,7 +275,13 @@ func (s *session) onCommandEvent(event linkEvent) {
 
 	case evProtocolMatch:
 		if len(event.payload) >= 4 {
-			infof(moduleSession, "protocol version match status: %d", binary.BigEndian.Uint32(event.payload))
+			status := binary.BigEndian.Uint32(event.payload)
+			if status == 1 {
+				infof(moduleSession, "phone confirmed the CarLife version the head unit speaks")
+			} else {
+				warnf(moduleSession, "phone reported CarLife version match status %d, which is not the accepted value 1",
+					status)
+			}
 		}
 		s.requestVideo()
 		// The guide has the head unit start the authentication once the versions match,
@@ -297,7 +304,7 @@ func (s *session) onCommandEvent(event linkEvent) {
 			warnf(moduleSession, "phone limited the frame rate to %d fps (requested %d)", fps, requestedFPS)
 		}
 		if err := s.link.sendVideoEncoderStart(); err != nil {
-			errorf(moduleSession, "failed to start video encoder: %v", err)
+			errorf(moduleSession, "failed to start video encoder: %v; no video will arrive", err)
 		}
 		s.broadcastState()
 
@@ -447,7 +454,24 @@ func (s *session) applyDeviceInfo(payload []byte) {
 	s.deviceName = name
 	s.deviceModel = textField(info, "brand")
 	s.mu.Unlock()
-	infof(moduleSession, "phone device: %s (%s, Android %s)", name, textField(info, "manufacturer"), textField(info, "release"))
+	// The phone leaves fields out rather than sending an empty name, so a missing one would
+	// otherwise leave a gap in the parentheses.
+	label := name
+	if label == "" {
+		label = "unknown model"
+	}
+	details := make([]string, 0, 2)
+	if manufacturer := textField(info, "manufacturer"); manufacturer != "" {
+		details = append(details, manufacturer)
+	}
+	if release := textField(info, "release"); release != "" {
+		details = append(details, "Android "+release)
+	}
+	if len(details) == 0 {
+		infof(moduleSession, "phone device: %s", label)
+	} else {
+		infof(moduleSession, "phone device: %s (%s)", label, strings.Join(details, ", "))
+	}
 	s.broadcastState()
 }
 
@@ -469,7 +493,7 @@ func textField(info map[string]any, key string) string {
 
 func (s *session) startHandshake() {
 	if err := s.link.sendProtocolVersion(1, 0); err != nil {
-		errorf(moduleSession, "failed to send protocol version: %v", err)
+		errorf(moduleSession, "failed to send protocol version: %v; the handshake stops here", err)
 	}
 }
 
@@ -479,7 +503,7 @@ func (s *session) requestVideo() {
 	s.mu.Unlock()
 	infof(moduleSession, "requesting phone to encode video at %dx%d@%d", width, height, fps)
 	if err := s.link.sendVideoEncoderInit(int32(width), int32(height), int32(fps)); err != nil {
-		errorf(moduleSession, "failed to request video encoding: %v", err)
+		errorf(moduleSession, "failed to request video encoding: %v; the phone keeps its current mode", err)
 	}
 }
 
@@ -705,7 +729,7 @@ func (s *session) handleTouch(contacts []touchContact) {
 		// here reads as the finger jumping to the top left corner, and the phone cancels a
 		// press that leaves the control before it lifts instead of completing it.
 		if err := s.link.sendTouch(motionUp, lastX, lastY); err != nil {
-			errorf(moduleSession, "failed to send touch release: %v", err)
+			errorf(moduleSession, "failed to send touch release: %v; the phone keeps the contact pressed", err)
 		}
 		return
 	}
@@ -738,7 +762,7 @@ func (s *session) handleTouch(contacts []touchContact) {
 	s.mu.Unlock()
 
 	if err := s.link.sendTouch(action, x, y); err != nil {
-		errorf(moduleSession, "failed to send touch: %v", err)
+		errorf(moduleSession, "failed to send touch: %v; the input is lost", err)
 	}
 }
 
@@ -830,7 +854,7 @@ func (s *session) handleSiri() {
 
 func (s *session) sendHardKey(code uint32) {
 	if err := s.link.sendHardKey(code); err != nil {
-		errorf(moduleSession, "failed to send hard key 0x%02X: %v", code, err)
+		errorf(moduleSession, "failed to send hard key 0x%02X: %v; the key press is lost", code, err)
 	}
 }
 
