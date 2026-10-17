@@ -68,6 +68,7 @@ struct channel {
     unsigned long long tx_frames; /* USB -> local */
     unsigned long long tx_bytes;
     unsigned long long dropped;   /* received on USB but no local client connected */
+    unsigned long long rejected;  /* received on USB but unroutable, see usb_rx_loop */
 };
 
 static struct channel g_ch[AOA_CHANNEL_COUNT + 1]; /* index 1..6 */
@@ -443,7 +444,7 @@ static int usb_rx_loop(void)
     }
 
     for (;;) {
-        unsigned int ch_id, len, head_total;
+        unsigned int ch_id, len, head_total, body;
         const unsigned char *msg;
         struct channel *ch;
         int fd, st;
@@ -480,20 +481,36 @@ static int usb_rx_loop(void)
         ch->tx_frames++;
         ch->tx_bytes += len;
 
-        pthread_mutex_lock(&ch->lock);
-        fd = ch->client_fd;
-        pthread_mutex_unlock(&ch->lock);
-        if (fd < 0) {
-            ch->dropped++;
-            continue;
-        }
-        if (write_socket_full(fd, msg, len) != 0) {
-            aoa_log_warn("%s: write to local socket failed, dropping this connection", ch->name);
+        /* The phone picks what it puts on the wire. A head whose length disagrees with the AOA
+         * frame, or a body longer than the stack's per-channel buffer, makes the stack abandon
+         * that channel's receive loop for the rest of the session (and it leaves the oversized
+         * body unread, so the socket never lines up again). The AOA frame is length prefixed,
+         * so dropping the whole frame keeps the stream aligned and costs only this message. */
+        body = carlife_body_len(ch_id, msg);
+        if (head_total + body != len) {
+            aoa_log_warn("%s: head says %u + %u bytes, the frame carries %u, dropping this frame", ch->name, head_total,
+                         body, len);
+            ch->rejected++;
+        } else if (body > carlife_max_body(ch_id)) {
+            aoa_log_warn("%s: message body %u bytes exceeds the cap %u, dropping this frame", ch->name, body,
+                         carlife_max_body(ch_id));
+            ch->rejected++;
+        } else {
             pthread_mutex_lock(&ch->lock);
-            if (ch->client_fd == fd) {
-                shutdown(fd, SHUT_RDWR);
-            }
+            fd = ch->client_fd;
             pthread_mutex_unlock(&ch->lock);
+            if (fd < 0) {
+                ch->dropped++;
+                continue;
+            }
+            if (write_socket_full(fd, msg, len) != 0) {
+                aoa_log_warn("%s: write to local socket failed, dropping this connection", ch->name);
+                pthread_mutex_lock(&ch->lock);
+                if (ch->client_fd == fd) {
+                    shutdown(fd, SHUT_RDWR);
+                }
+                pthread_mutex_unlock(&ch->lock);
+            }
         }
 
         if (g_quiet) {
@@ -519,6 +536,9 @@ static int usb_rx_loop(void)
                     aoa_log_debug("    %-5s ↓%llu/%llu B  ↑%llu/%llu B%s", g_ch[i].name, g_ch[i].tx_frames,
                                   g_ch[i].tx_bytes, g_ch[i].rx_frames, g_ch[i].rx_bytes,
                                   g_ch[i].client_fd < 0 ? "  (no client)" : "");
+                    if (g_ch[i].rejected != 0) {
+                        aoa_log_debug("    %-5s rejected %llu unroutable frame(s)", g_ch[i].name, g_ch[i].rejected);
+                    }
                 }
             }
         }
