@@ -16,3 +16,4 @@ tools/aoa-probe/*.dSYM/
 
 # 编译中间物
 link/*.o
+server/server
