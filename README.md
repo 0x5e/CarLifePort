@@ -47,7 +47,7 @@ TCP 通道——与库自身在 ADB 模式下使用的方式一致：
 ```sh
 make all     # 构建全部组件
 make sdk     # 只构建原生库（CarLife SDK）
-make clean   # 删除 dist/ 与 .build/
+make clean   # 删除 dist/、.build/ 与 server/web/
 ```
 
 构建是增量的：产物只在自己的输入更新时才重建，改一个文件就只重编那一个；只有 `make clean` 会强制
@@ -58,15 +58,18 @@ make clean   # 删除 dist/ 与 .build/
 | `make all` | 下列四项，一次运行内完成 | — |
 | `make sdk` | 原生库：protobuf 2.5.0 + CarLife 协议栈 | `dist/libcarlifevehicle.dylib` |
 | `make link` | 链接进程（USB 传输 + 车机协议栈） | `dist/carlife-link` |
-| `make server` | Go 后端 | `dist/carlifed` |
-| `make web` | 前端（playport 原样构建后复制） | `dist/web/` |
-| `make clean` | 删除 `dist/` 与 `.build/` | — |
+| `make server` | Go 后端（含编译进去的前端） | `dist/carlifed` |
+| `make web` | 前端（playport 原样构建，暂存到 `server/web` 供嵌入） | — |
+| `make clean` | 删除 `dist/`、`.build/` 与 `server/web/` | — |
 
 首次全量构建可以加 `-j`（`make -j8 all`）并行编译原生库的 69 个源文件。
 
-全部产物放在同一目录：`carlifed` 按自身所在目录查找链接进程与前端，因此整个 `dist/`
-可以移动到其他位置运行。原生库使用 `@rpath` 安装名，链接进程使用 `@loader_path` rpath 定位同级
-目录中的 dylib，二进制中不包含构建路径。
+前端不是运行时目录：`make web` 把 `vendor/playport/web` 的构建结果暂存到 `server/web`，
+由 `server/webassets.go` 的 `go:embed` 编译进 `carlifed`，运行时只从内存提供，不读磁盘。
+`server/web` 是生成物、不进版本库，仓库里仍只有 vendor 那一份前端。
+
+`carlife-link` 需要和 `carlifed` 同目录：`carlifed` 按自身所在目录查找链接进程。原生库使用
+`@rpath` 安装名，链接进程使用 `@loader_path` rpath 定位同级目录中的 dylib，二进制中不包含构建路径。
 
 原生库的 69 个 C++ 源文件各自编译成 `.build/obj` 下的目标文件，按源文件与头文件的时间戳增量重建
 （编译时用 `-MMD` 记录每个目标文件包含了哪些头文件）。protobuf 安装进 `.build/pb`，只在库文件缺失
@@ -118,12 +121,11 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 |---|---|---|
 | `CL_VIDEO_MODE` | `1280x720@60` | 请求手机的视频模式，格式为 `<宽>x<高>@<帧率>` |
 | `CL_WEB_ADDR` | `0.0.0.0:8080` | HTTPS 监听地址（默认对局域网可访问） |
-| `CL_WEB_DIR` | `<carlifed 目录>/web` | 前端静态资源目录 |
 | `CL_CHANNEL` | `20062100` | 上报给手机的渠道号（见「车机鉴权」） |
 | `CL_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
 | `CL_LINK` | `<carlifed 目录>/carlife-link` | 要拉起的链接进程可执行文件 |
 
-`CL_LINK` / `CL_WEB_DIR` 按给定值使用，相对路径相对于当前工作目录。视频模式与监听地址以外的行为
+`CL_LINK` 按给定值使用，相对路径相对于当前工作目录。视频模式与监听地址以外的行为
 不可配置：服务总是使用自签名证书的 HTTPS，总是拉起并重启链接进程，链接进程监听的 Unix socket
 固定为 `/tmp/carlife-link.sock`；访问令牌固定为 `0`，车机名与车机 id 都取本机（hostname 与 host uuid）。
 

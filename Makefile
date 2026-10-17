@@ -9,9 +9,10 @@
 # of them. Nothing is discarded between runs, so make clean is the only way to force a full
 # rebuild.
 #
-# Run-time artifacts go to dist/ and nowhere else: carlifed looks for the process it starts
-# and for the web assets next to itself (see server/main.go). Intermediates stay in .build/
-# and nothing is ever run from there.
+# Run-time artifacts go to dist/ and nowhere else: carlifed looks for the link process it
+# starts next to itself (see server/main.go). The browser client is not a run-time
+# directory -- it is compiled into carlifed. Intermediates stay in .build/ and nothing is
+# ever run from there.
 #
 # macOS ships GNU make 3.81, so nothing here uses .ONESHELL or .RECIPEPREFIX.
 
@@ -30,8 +31,7 @@ CXX := clang++
 all: sdk link server web
 	@printf '\n\033[1;32mbuild complete\033[0m\n'
 	@printf '  dist/carlife-link              + libcarlifevehicle.dylib\n'
-	@printf '  dist/carlifed\n'
-	@printf '  dist/web\n'
+	@printf '  dist/carlifed                  (browser client embedded)\n'
 	@printf '\nrun dist/carlifed to start everything\n'
 
 # --------------------------------------------------------------------------- native SDK
@@ -118,29 +118,34 @@ link: sdk
 
 # ------------------------------------------------------------------- backend + frontend
 # Go and vite track their own inputs, so these two are phony on purpose.
-server:
-	@printf '\n\033[1;36m==> backend\033[0m\n'
+#
+# The frontend is not a run-time directory. make web builds it unmodified from
+# vendor/playport/web and stages the result in server/web, which is what the //go:embed
+# directive in server/webassets.go compiles into carlifed. That staging directory is
+# generated (and ignored by git), so the vendored copy stays the only one in the tree.
+server: web
+	@printf '\n\033[1;36m==> backend (browser client embedded)\033[0m\n'
 	@mkdir -p $(DIST)
 	@cd $(ROOT)/server && go build -o $(DIST)/carlifed .
 
-WEB_DIR := $(ROOT)/vendor/playport/web
+WEB_DIR   := $(ROOT)/vendor/playport/web
+WEB_STAGE := $(ROOT)/server/web
 
 web:
 	@printf '\n\033[1;36m==> frontend (vendor/playport, built unmodified)\033[0m\n'
-	@mkdir -p $(DIST)
 	@if [ ! -d $(WEB_DIR)/node_modules ]; then \
 	  echo "== first build, installing web dependencies"; \
 	  cd $(WEB_DIR) && npm install --no-package-lock; \
 	fi
 	@cd $(WEB_DIR) && npm run build
-	@rm -rf $(DIST)/web && cp -R $(WEB_DIR)/dist $(DIST)/web
+	@rm -rf $(WEB_STAGE) && cp -R $(WEB_DIR)/dist $(WEB_STAGE)
 
 # ------------------------------------------------------------------------------ clean
-# dist/ and .build/ go away entirely. vendor/playport/web/node_modules is a dependency
-# cache and is kept, so the next build does not reinstall it.
+# dist/, .build/ and the staged frontend go away entirely. vendor/playport/web/node_modules
+# is a dependency cache and is kept, so the next build does not reinstall it.
 clean:
 	@$(MAKE) -C $(ROOT)/link clean
-	@rm -rf $(DIST) $(BUILD)
-	@echo "== clean: removed dist/ and .build/"
+	@rm -rf $(DIST) $(BUILD) $(WEB_STAGE)
+	@echo "== clean: removed dist/, .build/ and server/web"
 
 -include $(LIB_OBJS:.o=.d)

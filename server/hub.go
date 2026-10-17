@@ -76,12 +76,15 @@ func newHub(deviceName string, display *displayState) *Hub {
 	}
 }
 
-func (h *Hub) Routes(webDir string) http.Handler {
+// Routes builds the HTTP surface: the WebSocket stream, the two JSON endpoints the client
+// polls, and the browser client itself, which is served from the assets embedded in this
+// binary (see webassets.go).
+func (h *Hub) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", h.serveWebSocket)
 	mux.HandleFunc("/api/status", h.serveStatus)
 	mux.HandleFunc("/api/display", h.serveDisplay)
-	mux.Handle("/", http.FileServer(http.Dir(webDir)))
+	mux.Handle("/", http.FileServerFS(webRoot()))
 	return mux
 }
 

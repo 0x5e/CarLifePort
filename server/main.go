@@ -151,7 +151,6 @@ type config struct {
 	deviceName string
 	width      int
 	height     int
-	webDir     string
 	channel    string
 	cuid       string
 }
@@ -170,8 +169,9 @@ func executableDir() string {
 	return filepath.Dir(executable)
 }
 
-// loadConfig reads every knob, defaulting each path to a file next to this binary:
-// the top-level Makefile puts the link program and the web assets in the same directory.
+// loadConfig reads every knob, defaulting each path to a file next to this binary: the
+// top-level Makefile puts the link program there. The browser client is not a path at all:
+// it is compiled into this binary.
 func loadConfig() config {
 	dir := executableDir()
 	// The video mode is one knob: the phone is told width, height and frame rate in a single
@@ -191,7 +191,6 @@ func loadConfig() config {
 		width:      width,
 		height:     height,
 		fps:        fps,
-		webDir:     envString("CL_WEB_DIR", filepath.Join(dir, "web")),
 		// Vendor channel number; the phone checks it before it treats the head unit as
 		// authenticated. The check the CarLife app applies is: the trimmed string is
 		// non-empty, matches 2 followed by exactly seven digits, and is neither 20000000
@@ -212,21 +211,19 @@ func loadConfig() config {
 
 const usageText = `usage: carlifed
 
-Configuration comes from CL_-prefixed environment variables; there are no flags. Every
-path defaults to a file next to this binary, which is where the Makefile puts it.
+Configuration comes from CL_-prefixed environment variables; there are no flags. CL_LINK
+defaults to a file next to this binary, which is where the Makefile puts it.
 
   CL_VIDEO_MODE    1280x720@60             video mode requested from the phone, as
                                            <width>x<height>@<fps>
   CL_WEB_ADDR      0.0.0.0:8080            HTTPS listen address
-  CL_WEB_DIR       <binary dir>/web        static web asset directory
   CL_CHANNEL       20062100                vendor channel number reported to the phone
   CL_LOG_LEVEL     info                    debug, info, warn or error; debug adds the
-                                           per-frame telemetry, the link's periodic
-                                           per-channel statistics, and the link's copy of
+                                           per-frame telemetry and the link's copy of
                                            the events this process already reports
   CL_LINK          <binary dir>/carlife-link         the link to start
 
-CL_WEB_DIR and CL_LINK are used as given, relative paths included.
+CL_LINK is used as given, relative paths included.
 `
 
 func main() {
@@ -241,10 +238,6 @@ func main() {
 
 	setLogLevel()
 	cfg := loadConfig()
-
-	if _, err := os.Stat(cfg.webDir); err != nil {
-		warnf(moduleSelf, "%s does not exist; run make to build the browser client", cfg.webDir)
-	}
 
 	var sess *session
 
@@ -276,7 +269,7 @@ func main() {
 		sess.broadcastState()
 	}
 
-	server := &http.Server{Addr: cfg.addr, Handler: hub.Routes(cfg.webDir)}
+	server := &http.Server{Addr: cfg.addr, Handler: hub.Routes()}
 
 	// Everything that can fail is prepared before the children exist: aborting after they
 	// are running would leave them behind, still holding the USB device.
@@ -299,7 +292,7 @@ func main() {
 	for _, entry := range viewerURLs(cfg.addr, "https") {
 		infof(moduleSelf, "viewer URL   %s", entry)
 	}
-	infof(moduleSelf, "web assets   %s", cfg.webDir)
+	infof(moduleSelf, "web assets   embedded")
 	infof(moduleSelf, "socket       %s", defaultSocketPath)
 	infof(moduleSelf, "starting     %s", cfg.linkPath)
 
