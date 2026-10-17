@@ -488,12 +488,19 @@ static int usb_rx_loop(void)
          * so dropping the whole frame keeps the stream aligned and costs only this message. */
         body = carlife_body_len(ch_id, msg);
         if (head_total + body != len) {
-            aoa_log_warn("%s: head says %u + %u bytes, the frame carries %u, dropping this frame", ch->name, head_total,
-                         body, len);
+            if (ch_id == 1 || ch_id == 6) {
+                aoa_log_warn("%s: dropping a %u-byte frame; its 2-byte length field holds %u, which leaves %u bytes "
+                             "unexplained (the field tops out at 65535)",
+                             ch->name, len, body, len - head_total - body);
+            } else {
+                aoa_log_warn("%s: dropping a %u-byte frame; its 4-byte length field holds %u, which disagrees with "
+                             "the frame",
+                             ch->name, len, body);
+            }
             ch->rejected++;
         } else if (body > carlife_max_body(ch_id)) {
-            aoa_log_warn("%s: message body %u bytes exceeds the cap %u, dropping this frame", ch->name, body,
-                         carlife_max_body(ch_id));
+            aoa_log_warn("%s: dropping a %u-byte frame; its body of %u bytes exceeds the channel cap %u", ch->name,
+                         len, body, carlife_max_body(ch_id));
             ch->rejected++;
         } else {
             pthread_mutex_lock(&ch->lock);
