@@ -434,22 +434,15 @@ static int rx_fill(struct rx_stream *s, unsigned int need)
 static int usb_rx_loop(void)
 {
     struct rx_stream rx;
-    time_t last_report = 0;
-    unsigned long long last_tx = 0, last_rx = 0, last_drop = 0;
 
     memset(&rx, 0, sizeof(rx));
     aoa_log("start forwarding (USB -> local / local -> USB), Ctrl-C to stop");
-    if (!g_quiet) {
-        time(&last_report);
-    }
 
     for (;;) {
         unsigned int ch_id, len, head_total, body;
         const unsigned char *msg;
         struct channel *ch;
         int fd, st;
-        unsigned long long tx_sum = 0, rx_sum = 0, drop_sum = 0;
-        int i;
 
         st = rx_fill(&rx, AOA_HEAD_LEN);
         if (st == 1) {
@@ -520,6 +513,10 @@ static int usb_rx_loop(void)
             }
         }
 
+        /* The per-second traffic summary is off for now: under debug it prints a dozen lines a
+         * second and buries the one-off events that matter. The per-channel counters in struct
+         * channel are still updated, and an unroutable frame already warns as it is dropped. */
+#if 0
         if (g_quiet) {
             continue;
         }
@@ -549,6 +546,7 @@ static int usb_rx_loop(void)
                 }
             }
         }
+#endif
     }
 }
 
