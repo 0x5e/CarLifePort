@@ -650,13 +650,14 @@ static const char* media_play_mode_name(uint32_t mode)
  * running - which is what decides whether the audio channel carries anything at all.
  *
  * All fields of MSG_CMD_MEDIA_INFO (guide 13.2) are logged, under the names the structure
- * uses, except albumArt: it is a bitmap, so only its length is printed. */
+ * uses, as key=value: strings are quoted so that a title with spaces stays readable.
+ * albumArt is a bitmap, so only its size is printed, in kB. */
 static void cb_media_info(S_MEDIA_INFO* info)
 {
-    log_line("media info: source=%s song=%s artist=%s album=%s albumArt=%u B duration=%us "
-             "playlistNum=%u songId=%s mode=%s (%u)",
+    log_line("media info: source=\"%s\" song=\"%s\" artist=\"%s\" album=\"%s\" albumArt=%.1f kB "
+             "duration=%us playlistNum=%u songId=\"%s\" mode=%s (%u)",
              info->source.c_str(), info->song.c_str(), info->artist.c_str(), info->album.c_str(),
-             (unsigned int)info->albumArt.size(), info->duration, info->playlistNum,
+             (double)info->albumArt.size() / 1024.0, info->duration, info->playlistNum,
              info->songId.c_str(), media_play_mode_name(info->mode), info->mode);
 }
 
