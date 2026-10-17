@@ -988,7 +988,8 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             action.x = get_be32(body + 4);
             action.y = get_be32(body + 8);
             lib->ctrlTouchAction(&action);
-            log_line_debug("sending touch action %u at %u,%u", action.action, action.x, action.y);
+            /* Every drag point logs one line, which floods a debug run. */
+            /* log_line_debug("sending touch action %u at %u,%u", action.action, action.x, action.y); */
             break;
         }
         case CMD_TOUCH_DOWN: {
