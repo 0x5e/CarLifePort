@@ -120,6 +120,20 @@ func hostName() string {
 	return name
 }
 
+// machineID returns this machine's own identifier, reported to the phone as the head unit
+// id. The guide requires the value to be unique per head unit (the phone drops the
+// connection when it sees a repeat), which is why it is read from the machine instead of
+// being a constant.
+func machineID() string {
+	if id := hostUUID(); id != "" {
+		return id
+	}
+	// No identifier from the platform (a stripped down system, or a lookup that failed):
+	// the hostname is what is left, even though two machines can share one.
+	warnf(moduleSelf, "no host uuid available, reporting the hostname as the head unit id")
+	return hostName()
+}
+
 // config is everything carlifed can be told to do. It comes from CL_-prefixed environment
 // variables and from nothing else: there are no command-line flags, so whatever started
 // carlifed (a terminal, a launch agent, another script) configures it the same way.
@@ -183,9 +197,9 @@ func loadConfig() config {
 		// statistics info itself, whatever the channel is. See README "Head unit
 		// authentication".
 		channel: envString("CL_CHANNEL", "20062100"),
-		// Head unit id. The guide requires it to be unique per head unit; the phone drops
-		// the connection when it sees a repeat.
-		cuid: envString("CL_CUID", "CarLifePort"),
+		// Head unit id, taken from the machine: the guide requires it to be unique per head
+		// unit, and the phone drops the connection when it sees a repeat.
+		cuid: machineID(),
 	}
 }
 
@@ -201,7 +215,6 @@ path defaults to a file next to this binary, which is where the Makefile puts it
   CL_WIDTH         1280                    requested phone video width
   CL_HEIGHT        720                     requested phone video height
   CL_CHANNEL       20062100                vendor channel number reported to the phone
-  CL_CUID          CarLifePort             head unit id reported to the phone
   CL_LOG_LEVEL     info                    debug, info, warn or error; debug adds the
                                            per-frame telemetry, the link's periodic
                                            per-channel statistics, and the link's copy of

@@ -124,7 +124,6 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 | `CL_WIDTH` | `1280` | 请求手机的视频宽度 |
 | `CL_HEIGHT` | `720` | 请求手机的视频高度 |
 | `CL_CHANNEL` | `20062100` | 上报给手机的渠道号（见「车机鉴权」） |
-| `CL_CUID` | `CarLifePort` | 上报给手机的车机 id，指南要求每台唯一 |
 | `CL_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
 | `CL_LINK` | `<carlifed 目录>/carlife-link` | 要拉起的链接进程可执行文件 |
 
@@ -145,8 +144,8 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 | `-q` / `--quiet` | 关 | 不打印运行日志与周期性的转发统计 |
 | `-v` / `--verbose` | 关 | 额外输出协议栈内部日志（默认丢弃） |
 
-三个必填参数的默认值只存在于 `carlifed`（`CL_CHANNEL` / `CL_CUID`，socket 路径是内部常量），
-链接进程不重复定义；缺任一个都会直接报错退出，`--list` 不需要它们。
+三个必填参数的取值只来自 `carlifed`（渠道号是 `CL_CHANNEL`，车机 id 取本机 host uuid，socket 路径
+是内部常量），链接进程不重复定义；缺任一个都会直接报错退出，`--list` 不需要它们。
 
 周期性的转发统计默认打印但标记为 debug，由 `carlifed` 按级别过滤。
 
@@ -247,9 +246,9 @@ socket，进程退出后 socket 仍被持有，`carlifed` 会连接到一个无�
 
 ```sh
 dist/carlife-link --list      # 只枚举 USB 设备，不操作任何设备
-dist/carlife-link --socket /tmp/carlife-link.sock --channel 20062100 --cuid CarLifePort
-                              # 完整的链接进程；三个参数必填，取值即 carlifed 的默认值
-dist/carlife-link --socket /tmp/carlife-link.sock --channel 20062100 --cuid CarLifePort -v
+dist/carlife-link --socket /tmp/carlife-link.sock --channel 20062100 --cuid "$(uuidgen)"
+                              # 完整的链接进程；三个参数必填，cuid 手工调试时随便给一个唯一值
+dist/carlife-link --socket /tmp/carlife-link.sock --channel 20062100 --cuid "$(uuidgen)" -v
                               # 同上，并保留协议栈内部日志
 ```
 
@@ -317,7 +316,8 @@ CarLife Android app 侧的校验规则（逆向所得，`CARLIFE_AUTH.md` 2.2 �
 （`VehicleChannel.VEHICLE_CHANNEL_DAIMLER`），可由 `CL_CHANNEL` 覆盖。奔驰是唯一会让 app 额外校验
 自身安装包签名的渠道（`SignatureVerification.packageSignatureCheck`），官方包必然通过；重新打包的包
 本来也过不了 app 在收到统计信息时无条件执行的那道签名检查，与渠道号无关。
-`cuid` 按指南要求每台车机唯一（重复会使手机主动断开连接），默认 `CarLifePort`，可由 `CL_CUID` 覆盖。
+`cuid` 按指南要求每台车机唯一（重复会使手机主动断开连接），取本机 host uuid（macOS 的硬件 UUID、
+Linux 的 `/etc/machine-id`），不提供配置项。
 
 该上报必须发送，且渠道号必须合法：它是手机上功能定制链的触发条件，缺失或不合法会让音频通道零帧。
 
