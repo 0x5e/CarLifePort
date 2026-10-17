@@ -19,6 +19,13 @@ import (
 // here alone: carlife-link has no default of its own and is told the path with --socket.
 const defaultSocketPath = "/tmp/carlife-link.sock"
 
+// accessToken is the value the browser client presents on /ws and /api/display, and the
+// one printed in the viewer URL. It is a constant rather than a knob: the client reads it
+// from the URL once, keeps it in localStorage and replays it from there, so a per-machine
+// value would only be something else to carry around. It is not a security boundary --
+// this is a service for the machine it runs on.
+const accessToken = "0"
+
 // listenAddress is one address the browser client can be opened with, optionally
 // annotated with the interface it belongs to.
 type listenAddress struct {
@@ -29,10 +36,10 @@ type listenAddress struct {
 // viewerURLs lists the URLs the browser client can be opened with. Binding to a wildcard
 // address prints one URL per interface, so the address that works from another machine is
 // visible instead of having to be guessed. A specific bind address yields only that one.
-func viewerURLs(addr, token, scheme string) []string {
+func viewerURLs(addr, scheme string) []string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return []string{fmt.Sprintf("%s://%s/?token=%s", scheme, addr, token)}
+		return []string{fmt.Sprintf("%s://%s/?token=%s", scheme, addr, accessToken)}
 	}
 
 	addresses := []listenAddress{{host: host}}
@@ -42,7 +49,7 @@ func viewerURLs(addr, token, scheme string) []string {
 
 	urls := make([]string, 0, len(addresses))
 	for _, entry := range addresses {
-		url := fmt.Sprintf("%s://%s/?token=%s", scheme, net.JoinHostPort(entry.host, port), token)
+		url := fmt.Sprintf("%s://%s/?token=%s", scheme, net.JoinHostPort(entry.host, port), accessToken)
 		if entry.label != "" {
 			url += " (" + entry.label + ")"
 		}
@@ -94,21 +101,6 @@ func envString(name, fallback string) string {
 	return fallback
 }
 
-// envInt returns the value of the environment variable name parsed as an integer, or
-// fallback when it is unset or empty. A value that is present but not a number aborts:
-// silently falling back would turn a typo into an unnoticed wrong frame rate.
-func envInt(name string, fallback int) int {
-	value := os.Getenv(name)
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		fatalf(moduleSelf, "%s=%q is not an integer", name, value)
-	}
-	return parsed
-}
-
 // hostName returns the machine's hostname, the head unit name the web client shows. The
 // fallback only matters if the lookup fails, which it does not in practice; it keeps the
 // browser from showing an empty name.
@@ -134,13 +126,27 @@ func machineID() string {
 	return hostName()
 }
 
+// parseVideoMode reads the "<width>x<height>@<fps>" form of CL_VIDEO_MODE, which is how a
+// video mode is normally written (1920x720@60). A value that does not parse aborts: asking
+// the phone to encode at a resolution nobody chose is worse than not starting.
+func parseVideoMode(value string) (int, int, int) {
+	size, rate, hasRate := strings.Cut(value, "@")
+	width, height, hasSize := strings.Cut(size, "x")
+	widthPixels, widthErr := strconv.Atoi(width)
+	heightPixels, heightErr := strconv.Atoi(height)
+	fps, fpsErr := strconv.Atoi(rate)
+	if !hasRate || !hasSize || widthErr != nil || heightErr != nil || fpsErr != nil {
+		fatalf(moduleSelf, "CL_VIDEO_MODE=%q is not <width>x<height>@<fps>, for example 1920x720@60", value)
+	}
+	return widthPixels, heightPixels, fps
+}
+
 // config is everything carlifed can be told to do. It comes from CL_-prefixed environment
 // variables and from nothing else: there are no command-line flags, so whatever started
 // carlifed (a terminal, a launch agent, another script) configures it the same way.
 type config struct {
 	linkPath   string
 	addr       string
-	token      string
 	fps        int
 	deviceName string
 	width      int
@@ -168,23 +174,24 @@ func executableDir() string {
 // the top-level Makefile puts the link program and the web assets in the same directory.
 func loadConfig() config {
 	dir := executableDir()
+	// The video mode is one knob: the phone is told width, height and frame rate in a single
+	// message, so the three are only meaningful together. The phone may cap the frame rate
+	// and reports the rate it accepted in the log, so lower this if 60 is not accepted. The
+	// web client's display panel changes it at runtime.
+	width, height, fps := parseVideoMode(envString("CL_VIDEO_MODE", "1280x720@60"))
 	return config{
 		linkPath: envString("CL_LINK", filepath.Join(dir, "carlife-link")),
 		// The default is reachable from other machines on the LAN; one viewer URL is
 		// printed per interface. 127.0.0.1:8080 keeps the page local.
-		addr: envString("CL_ADDR", "0.0.0.0:8080"),
-		// Access token the browser client must present.
-		token: envString("CL_TOKEN", "0"),
-		// Requested frame rate; the phone may cap it and reports the rate it accepted in
-		// the log, so lower this if 60 is not accepted.
-		fps: envInt("CL_FPS", 60),
+		addr: envString("CL_WEB_ADDR", "0.0.0.0:8080"),
 		// The head unit name the web client shows. It is this machine's hostname rather
 		// than a knob: on the target device the hostname is the name the user gave it, and
 		// a name that matches the machine is easier to recognize than a fixed one.
 		deviceName: hostName(),
-		width:      envInt("CL_WIDTH", 1280),
-		height:     envInt("CL_HEIGHT", 720),
-		webDir:     envString("CL_WEB", filepath.Join(dir, "web")),
+		width:      width,
+		height:     height,
+		fps:        fps,
+		webDir:     envString("CL_WEB_DIR", filepath.Join(dir, "web")),
 		// Vendor channel number; the phone checks it before it treats the head unit as
 		// authenticated. The check the CarLife app applies is: the trimmed string is
 		// non-empty, matches 2 followed by exactly seven digits, and is neither 20000000
@@ -208,12 +215,10 @@ const usageText = `usage: carlifed
 Configuration comes from CL_-prefixed environment variables; there are no flags. Every
 path defaults to a file next to this binary, which is where the Makefile puts it.
 
-  CL_ADDR          0.0.0.0:8080            HTTP listen address
-  CL_TOKEN         0                       access token the browser client must present
-  CL_FPS           60                      frame rate requested from the phone
-  CL_WEB           <binary dir>/web        static web asset directory
-  CL_WIDTH         1280                    requested phone video width
-  CL_HEIGHT        720                     requested phone video height
+  CL_VIDEO_MODE    1280x720@60             video mode requested from the phone, as
+                                           <width>x<height>@<fps>
+  CL_WEB_ADDR      0.0.0.0:8080            HTTPS listen address
+  CL_WEB_DIR       <binary dir>/web        static web asset directory
   CL_CHANNEL       20062100                vendor channel number reported to the phone
   CL_LOG_LEVEL     info                    debug, info, warn or error; debug adds the
                                            per-frame telemetry, the link's periodic
@@ -221,7 +226,7 @@ path defaults to a file next to this binary, which is where the Makefile puts it
                                            the events this process already reports
   CL_LINK          <binary dir>/carlife-link         the link to start
 
-CL_WEB and CL_LINK are used as given, relative paths included.
+CL_WEB_DIR and CL_LINK are used as given, relative paths included.
 `
 
 func main() {
@@ -246,7 +251,7 @@ func main() {
 	display := newDisplayState(cfg.width, cfg.height, cfg.fps, func(width, height, fps int) error {
 		return sess.changeDisplay(width, height, fps)
 	})
-	hub := newHub(cfg.token, cfg.deviceName, display)
+	hub := newHub(cfg.deviceName, display)
 	link := newLinkClient(defaultSocketPath)
 	sess = newSession(link, hub, cfg.width, cfg.height, cfg.fps)
 	hub.session = sess
@@ -291,7 +296,7 @@ func main() {
 	// Reported before the link is started, so that the addresses are on screen even when
 	// the first connection to the phone fails.
 	infof(moduleSelf, "service started")
-	for _, entry := range viewerURLs(cfg.addr, cfg.token, "https") {
+	for _, entry := range viewerURLs(cfg.addr, "https") {
 		infof(moduleSelf, "viewer URL   %s", entry)
 	}
 	infof(moduleSelf, "web assets   %s", cfg.webDir)

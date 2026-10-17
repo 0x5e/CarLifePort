@@ -106,9 +106,8 @@ dist/carlifed
 不打印（与 playport 一致，启动日志已说明需要接受一次警告），其它握手错误照常打印。证书按生成
 时的网卡地址签发，更换网络后某个地址不在证书中时会再次出现警告，与 playport 行为一致。
 
-URL 中的 `token` 是 playport 前端要求的访问令牌，缺失时不建立连接。令牌在首次打开后存入
-localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorage 仍保留旧值，需要用带新
-`?token=` 的地址再打开一次。
+URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：它是前端接口的一部分，不是可配置项，
+也不构成访问控制。令牌在首次打开后存入 localStorage，其后可以不带 `?token=` 访问。
 
 ### 配置
 
@@ -117,19 +116,16 @@ localStorage，其后可以不带 `?token=` 访问；令牌变更后 localStorag
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `CL_ADDR` | `0.0.0.0:8080` | HTTP 监听地址（默认对局域网可访问） |
-| `CL_TOKEN` | `0` | 浏览器访问令牌 |
-| `CL_FPS` | `60` | 请求手机使用的帧率 |
-| `CL_WEB` | `<carlifed 目录>/web` | 前端静态资源目录 |
-| `CL_WIDTH` | `1280` | 请求手机的视频宽度 |
-| `CL_HEIGHT` | `720` | 请求手机的视频高度 |
+| `CL_VIDEO_MODE` | `1280x720@60` | 请求手机的视频模式，格式为 `<宽>x<高>@<帧率>` |
+| `CL_WEB_ADDR` | `0.0.0.0:8080` | HTTPS 监听地址（默认对局域网可访问） |
+| `CL_WEB_DIR` | `<carlifed 目录>/web` | 前端静态资源目录 |
 | `CL_CHANNEL` | `20062100` | 上报给手机的渠道号（见「车机鉴权」） |
 | `CL_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
 | `CL_LINK` | `<carlifed 目录>/carlife-link` | 要拉起的链接进程可执行文件 |
 
-`CL_LINK` / `CL_WEB` 按给定值使用，相对路径相对于当前工作目录。监听地址、访问令牌、帧率与
-分辨率以外的行为不可配置：服务总是使用自签名证书的 HTTPS，总是拉起并重启链接进程，链接进程
-监听的 Unix socket 固定为 `/tmp/carlife-link.sock`；前端显示的车机名取本机 hostname。
+`CL_LINK` / `CL_WEB_DIR` 按给定值使用，相对路径相对于当前工作目录。视频模式与监听地址以外的行为
+不可配置：服务总是使用自签名证书的 HTTPS，总是拉起并重启链接进程，链接进程监听的 Unix socket
+固定为 `/tmp/carlife-link.sock`；访问令牌固定为 `0`，车机名与车机 id 都取本机（hostname 与 host uuid）。
 
 链接进程由 `carlifed` 组装参数拉起（`--socket` / `--channel` / `--cuid`），其全部命令行参数如下：
 

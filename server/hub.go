@@ -53,7 +53,6 @@ type viewer struct {
 type Hub struct {
 	mu sync.Mutex
 
-	token      string
 	deviceName string
 	display    *displayState
 	session    *session
@@ -67,9 +66,8 @@ type Hub struct {
 	audioConfig map[byte][]byte
 }
 
-func newHub(token, deviceName string, display *displayState) *Hub {
+func newHub(deviceName string, display *displayState) *Hub {
 	return &Hub{
-		token:       token,
 		deviceName:  deviceName,
 		display:     display,
 		viewers:     make(map[*viewer]struct{}),
@@ -200,7 +198,7 @@ func (h *Hub) BroadcastJSON(value any) {
 }
 
 func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("token") != h.token {
+	if r.URL.Query().Get("token") != accessToken {
 		warnf(moduleViewer, "rejected a WebSocket connection from %s: invalid token", r.RemoteAddr)
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
@@ -394,7 +392,7 @@ func (h *Hub) serveDisplay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) applyDisplay(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("token") != h.token {
+	if r.URL.Query().Get("token") != accessToken {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid token"})
 		return
 	}
