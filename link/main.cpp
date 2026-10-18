@@ -659,7 +659,7 @@ static const char* media_play_mode_name(uint32_t mode)
  * albumArt is a bitmap, so only its size is printed, in kB. */
 static void cb_media_info(S_MEDIA_INFO* info)
 {
-    log_line("media info: source=\"%s\" song=\"%s\" artist=\"%s\" album=\"%s\" albumArt=%.1f kB "
+    log_line_debug("media info: source=\"%s\" song=\"%s\" artist=\"%s\" album=\"%s\" albumArt=%.1f kB "
              "duration=%us playlistNum=%u songId=\"%s\" mode=%s (%u)",
              info->source.c_str(), info->song.c_str(), info->artist.c_str(), info->album.c_str(),
              (double)info->albumArt.size() / 1024.0, info->duration, info->playlistNum,
