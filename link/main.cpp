@@ -370,7 +370,8 @@ static void cb_background(void)
 
 static void cb_go_to_desktop(void)
 {
-    log_line("phone returned to home screen");
+    send_frame(CH_CMD, EV_GO_TO_DESKTOP, NULL, 0);
+    log_line_debug("phone returned to home screen");
 }
 
 static void cb_mic_wakeup(void)

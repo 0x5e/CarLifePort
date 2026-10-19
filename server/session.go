@@ -371,6 +371,9 @@ func (s *session) onCommandEvent(event linkEvent) {
 	case evModuleStatus:
 		infof(moduleSession, "phone module status: %s", describeModuleStatus(event.payload))
 
+	case evGoToDesktop:
+		infof(moduleSession, "phone returned to the home screen")
+
 	case evLog:
 		debugf(moduleSession, "carlife-link: %s", string(event.payload))
 	}

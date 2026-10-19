@@ -49,6 +49,7 @@ enum {
     EV_MODULE_STATUS = 15,      /* UTF-8 JSON */
     EV_FEATURE_CONFIG_REQUEST = 16,
     EV_AUTHEN_RESULT = 17,      /* [1B result] 1 = the phone authenticated this head unit */
+    EV_GO_TO_DESKTOP = 18,
     EV_LOG = 90                 /* UTF-8 text, for diagnostics */
 };
 

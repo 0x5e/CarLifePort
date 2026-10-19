@@ -39,6 +39,7 @@ const (
 	evModuleStatus         byte = 15
 	evFeatureConfigRequest byte = 16
 	evAuthenResult         byte = 17
+	evGoToDesktop          byte = 18
 	evLog                  byte = 90
 
 	evVideoData      byte = 1
