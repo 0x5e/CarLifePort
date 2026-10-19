@@ -394,6 +394,7 @@ struct rx_stream {
     size_t cap;
     unsigned int off; /* start of the frame being parsed */
     unsigned int len; /* end of what has been received */
+    unsigned long long skipped; /* bytes discarded before a frame head was found */
 };
 
 /* Buffer at least need bytes ahead of off, reading from USB as needed.
@@ -430,6 +431,72 @@ static int rx_fill(struct rx_stream *s, unsigned int need)
     return 0;
 }
 
+static unsigned int get_be32(const unsigned char *p)
+{
+    return ((unsigned int)p[0] << 24) | ((unsigned int)p[1] << 16) |
+           ((unsigned int)p[2] << 8) | (unsigned int)p[3];
+}
+
+/* A position can only be the start of a frame if its 4-byte channel id is one the link
+ * knows and its 4-byte totalLen fits that channel's range. Passing this makes it a
+ * candidate, not a frame: the message head that follows repeats the length, and
+ * usb_rx_loop checks the two agree before the frame is routed. */
+static int head_plausible(const unsigned char *p)
+{
+    unsigned int ch = get_be32(p);
+    unsigned int len = get_be32(p + 4);
+    unsigned int head;
+
+    if (ch < 1 || ch > AOA_CHANNEL_COUNT) {
+        return 0;
+    }
+    head = carlife_head_len(ch);
+    return len >= head && len <= head + carlife_max_body(ch);
+}
+
+/* Block until the bytes at rx.off start a frame. Only a session this process opened is
+ * guaranteed to begin on a frame boundary: when the phone was already in a session (this
+ * process was restarted while it was streaming), the bytes the previous process had taken
+ * off the endpoint are gone, and the first read lands inside a frame. Those bytes cannot be
+ * recovered, so the stream is re-aligned by dropping them. */
+static int rx_sync(struct rx_stream *s)
+{
+    for (;;) {
+        unsigned int avail, skip;
+        int st;
+
+        st = rx_fill(s, AOA_HEAD_LEN);
+        if (st != 0) {
+            return st;
+        }
+        avail = s->len - s->off;
+        for (skip = 0; skip + AOA_HEAD_LEN <= avail; skip++) {
+            if (head_plausible(s->buf + s->off + skip)) {
+                break;
+            }
+        }
+        if (skip + AOA_HEAD_LEN <= avail) {
+            s->off += skip;
+            s->skipped += skip;
+            if (s->skipped > 0) {
+                aoa_log_warn("USB stream: dropped %llu byte(s) that did not start a frame, "
+                             "resuming at a frame head",
+                             s->skipped);
+                s->skipped = 0;
+            }
+            return 0;
+        }
+        /* Nothing here starts a frame. The last seven bytes stay: a head can be split
+         * across two reads, and everything before them is payload for certain. */
+        if (avail > AOA_HEAD_LEN - 1) {
+            unsigned int drop = avail - (AOA_HEAD_LEN - 1);
+
+            s->off += drop;
+            s->skipped += drop;
+        }
+    }
+}
+
 static int usb_rx_loop(void)
 {
     struct rx_stream rx;
@@ -443,22 +510,16 @@ static int usb_rx_loop(void)
         struct channel *ch;
         int fd, st;
 
-        st = rx_fill(&rx, AOA_HEAD_LEN);
+        st = rx_sync(&rx);
         if (st == 1) {
             return 0;
         }
         if (st < 0) {
             return -1;
         }
-        ch_id = ((unsigned int)rx.buf[0] << 24) | ((unsigned int)rx.buf[1] << 16) |
-                ((unsigned int)rx.buf[2] << 8) | (unsigned int)rx.buf[3];
-        len = ((unsigned int)rx.buf[4] << 24) | ((unsigned int)rx.buf[5] << 16) |
-              ((unsigned int)rx.buf[6] << 8) | (unsigned int)rx.buf[7];
+        ch_id = get_be32(rx.buf + rx.off);
+        len = get_be32(rx.buf + rx.off + 4);
         head_total = carlife_head_len(ch_id);
-        if (ch_id < 1 || ch_id > AOA_CHANNEL_COUNT || len < head_total || len > AOA_MSG_MAX) {
-            aoa_log_error("invalid AOA frame head: channel=%u totalLen=%u", ch_id, len);
-            return -1;
-        }
         st = rx_fill(&rx, AOA_HEAD_LEN + len);
         if (st == 1) {
             return 0;
