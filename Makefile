@@ -1,7 +1,8 @@
 # CarLifePort top-level build
 #
 #   make all     build every component into dist/
-#   make sdk     build only the native CarLife SDK -- dist/libcarlifevehicle.dylib
+#   make sdk     build only the native CarLife SDK -- the library inside
+#                dist/CarLifeLink.app/Contents/Frameworks
 #   make clean   remove dist/ and every intermediate under .build/
 #
 # All of them are incremental: an artifact is rebuilt only when one of its inputs is newer
@@ -19,6 +20,9 @@
 ROOT  := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 DIST  := $(ROOT)/dist
 BUILD := $(ROOT)/.build
+# The bundle the link half produces. The native library goes inside it as well, so that
+# dist/ holds one self-contained app and the library is covered by the bundle's signature.
+BUNDLE := $(DIST)/CarLifeLink.app
 
 # Assigned rather than defaulted: make predefines CC and CXX, so `?=` would never apply.
 # Override on the command line (make CXX=...) if needed.
@@ -30,8 +34,7 @@ CXX := clang++
 # ------------------------------------------------------------------------- everything
 all: sdk link server web
 	@printf '\n\033[1;32mbuild complete\033[0m\n'
-	@printf '  dist/CarLifeLink.app           (link, signed app bundle for CoreLocation)\n'
-	@printf '  dist/libcarlifevehicle.dylib\n'
+	@printf '  dist/CarLifeLink.app           (link + libcarlifevehicle.dylib, signed for CoreLocation)\n'
 	@printf '  dist/carlifed                  (browser client embedded)\n'
 	@printf '\nrun dist/carlifed to start everything\n'
 
@@ -61,7 +64,7 @@ PB_LIB     := $(PB_PREFIX)/lib/libprotobuf.a
 PB_PATCHED := $(BUILD)/.protobuf-patched
 PB_JOBS    := $(shell sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-LIB_DYLIB := $(DIST)/libcarlifevehicle.dylib
+LIB_DYLIB := $(BUNDLE)/Contents/Frameworks/libcarlifevehicle.dylib
 LIB_OBJ   := $(BUILD)/obj
 LIB_SRCS  := $(sort $(foreach d,$(LIB_DIRS),$(shell find $(LIB_SRC)/$(d) \( -name '*.cpp' -o -name '*.cc' \))))
 LIB_OBJS  := $(addprefix $(LIB_OBJ)/,$(addsuffix .o,$(patsubst %.cpp,%,$(patsubst %.cc,%,$(LIB_SRCS:$(LIB_SRC)/%=%)))))
@@ -79,11 +82,16 @@ $(CARLIFE_STAMP): $(CARLIFE_PATCH)
 	@cd $(ROOT)/vendor/carlife && patch -p1 --batch < $(CARLIFE_PATCH)
 	@touch $@
 
+# Signed here rather than together with the bundle: codesign refuses a bundle that contains
+# unsigned nested code, and signing it from the bundle step would update its timestamp and
+# make the link half relink on every run. The linker already leaves an ad-hoc signature on
+# arm64, but not on every platform, and this pass is what the bundle relies on.
 $(LIB_DYLIB): $(LIB_OBJS) $(PB_LIB)
 	@printf '\n\033[1;36m==> native SDK (%s sources)\033[0m\n' '$(words $(LIB_SRCS))'
-	@mkdir -p $(DIST)
+	@mkdir -p $(dir $@)
 	$(CXX) -dynamiclib -install_name @rpath/libcarlifevehicle.dylib -o $@ $(LIB_OBJS) \
 	    -L$(PB_PREFIX)/lib -lprotobuf -lpthread
+	@codesign --force --sign - $@
 	@ls -lh $@
 
 # Objects mirror the source tree under .build/obj. -MMD -MP records the headers each one

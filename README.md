@@ -56,7 +56,7 @@ make clean   # 删除 dist/、.build/ 与 server/web/
 | 目标 | 内容 | 产物 |
 |---|---|---|
 | `make all` | 下列四项，一次运行内完成 | — |
-| `make sdk` | 原生库：protobuf 2.5.0 + CarLife 协议栈 | `dist/libcarlifevehicle.dylib` |
+| `make sdk` | 原生库：protobuf 2.5.0 + CarLife 协议栈 | `dist/CarLifeLink.app/Contents/Frameworks/libcarlifevehicle.dylib` |
 | `make link` | 链接进程（USB 传输 + 车机协议栈） | `dist/CarLifeLink.app` |
 | `make server` | Go 后端（含编译进去的前端） | `dist/carlifed` |
 | `make web` | 前端（playport 原样构建，暂存到 `server/web` 供嵌入） | — |
@@ -69,8 +69,9 @@ make clean   # 删除 dist/、.build/ 与 server/web/
 `server/web` 是生成物、不进版本库，仓库里仍只有 vendor 那一份前端。
 
 `carlife-link` 放在 `dist/CarLifeLink.app` 里，`carlifed` 按自身所在目录拼出这个路径（定位授权要求，
-见「车载数据」）。原生库使用 `@rpath` 安装名，链接进程用 `@loader_path/../../..` 的 rpath 定位
-`dist/` 中的 dylib，二进制中不包含构建路径。
+见「车载数据」）。原生库也在这个 bundle 的 `Contents/Frameworks` 下：bundle 之外的代码不在它的签名范围
+内，而 macOS 要求 bundle 自包含。原生库使用 `@rpath` 安装名，链接进程用 `@executable_path/../Frameworks`
+的 rpath 定位它，二进制中不包含构建路径，`dist/` 可以整体搬走。
 
 原生库的 69 个 C++ 源文件各自编译成 `.build/obj` 下的目标文件，按源文件与头文件的时间戳增量重建
 （编译时用 `-MMD` 记录每个目标文件包含了哪些头文件）。protobuf 安装进 `.build/pb`，只在库文件缺失

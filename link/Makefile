@@ -14,9 +14,9 @@ ROOT       := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 PB         := $(ROOT)/.build/pb
 CARLIFE    := $(ROOT)/vendor/carlife/CarLife-Vehicle-Lib/LibSource
 
-# Run-time artifacts go to dist/, where carlifed looks for its siblings. The library is
-# resolved relative to this binary (rpath) instead of an absolute build path, so dist/ can
-# be copied or moved as a whole.
+# Run-time artifacts go to dist/, where carlifed looks for them. The library is resolved
+# relative to this binary (rpath) instead of an absolute build path, so dist/ can be copied
+# or moved as a whole.
 #
 # The binary lives inside an .app bundle because CoreLocation refuses a bare executable:
 # without the usage-description keys in an Info.plist the authorization request fails
@@ -24,20 +24,26 @@ CARLIFE    := $(ROOT)/vendor/carlife/CarLife-Vehicle-Lib/LibSource
 # signed ad-hoc for the same reason -- an unsigned one is not granted either. Launching
 # Contents/MacOS/carlife-link directly is enough; it does not have to be started with
 # `open`, so the parent keeps the child's stdout and stderr.
+#
+# libcarlifevehicle.dylib goes into Contents/Frameworks for the same reason: a bundle has
+# to be self-contained, and code outside it is not covered by its signature. The rpath is
+# relative to the executable, which is Contents/MacOS, so ../Frameworks is the library's
+# directory on the other side of the bundle.
 DIST       := $(ROOT)/dist
 BUNDLE     := $(DIST)/CarLifeLink.app
+FRAMEWORKS := $(BUNDLE)/Contents/Frameworks
 
 CC         ?= cc
 CXX        ?= clang++
 CFLAGS     += -O2 -g -Wall -Wextra -std=gnu11 $(shell pkg-config --cflags libusb-1.0 libcrypto)
 CXXFLAGS   += -std=gnu++11 -O2 -Wall -Wextra -I$(CARLIFE)/include -I$(PB)/include
-LDFLAGS    += -L$(DIST) -lcarlifevehicle -lpthread -Wl,-rpath,@loader_path/../../..
+LDFLAGS    += -L$(FRAMEWORKS) -lcarlifevehicle -lpthread -Wl,-rpath,@executable_path/../Frameworks
 LDLIBS     += $(shell pkg-config --libs libusb-1.0 libcrypto) -framework CoreLocation -framework Foundation
 
 TARGET     := $(BUNDLE)/Contents/MacOS/carlife-link
 PLIST      := $(BUNDLE)/Contents/Info.plist
 OBJECTS    := aoa.o bridge.o md_authen.o main.o gps.o
-LIBRARY    := $(DIST)/libcarlifevehicle.dylib
+LIBRARY    := $(FRAMEWORKS)/libcarlifevehicle.dylib
 
 .PHONY: all clean
 
