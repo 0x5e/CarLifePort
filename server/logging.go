@@ -89,8 +89,14 @@ var colourEnabled = func() bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }()
 
-// logLine writes "time level [module] message" to stderr; the module column is omitted
-// for the few lines that belong to no subsystem.
+// logLine writes "time level [module] <event> <key>=<value> ..." to stderr; the module column
+// is omitted for the few lines that belong to no subsystem.
+//
+// The event is a stable, lower-case, dotted name of the form <area>.<subject>_<outcome>
+// (session.version_confirmed, video.encoder_start_failed): it is what a search keys on, so it
+// outlives the fields around it. Fields carry the numbers, unit in the key (retry_ms,
+// rate_hz) and never in the value. The level says how bad it is, the event what happened;
+// prose belongs in neither.
 //
 // stderr rather than stdout because the child processes write there too and the three
 // streams end up in one terminal; keeping this one on stderr as well means the order is

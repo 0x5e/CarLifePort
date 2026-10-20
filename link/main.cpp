@@ -33,6 +33,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,15 @@ static std::string g_channel;
 static std::string g_cuid;
 
 /* -------------------------------------------------------- Logging and utils */
+
+/* Log line format
+ *
+ * Every line is "<event> <key>=<value> ...". The event is a stable, lower-case, dotted name
+ * of the form <area>.<subject>_<outcome> (protocol_version_sent, read_failed, frame_rejected)
+ * and is what a search keys on, so it outlives the fields around it. Fields carry the
+ * numbers, unit in the key (retry_ms, rate_hz, acc_m) and never in the value. Prose belongs
+ * in neither half: the level says how bad it is, the event says what happened.
+ */
 
 /* Shared body of the log_line* functions. The level marker is written right after the
  * timestamp, which is where the Go backend looks for it when it relays these lines: it
@@ -228,7 +238,7 @@ static void send_frame(uint8_t channel, uint8_t tag, const void* data, uint32_t 
     int fd = g_client_fd;
     if (fd >= 0) {
         if (!write_all(fd, header, sizeof(header)) || (len > 0 && !write_all(fd, (const uint8_t*)data, len))) {
-            log_line_error("failed to write to client: %s", strerror(errno));
+            log_line_error("link.client_write_failed err=%s", strerror(errno));
         }
     }
     pthread_mutex_unlock(&g_send_lock);
@@ -296,7 +306,7 @@ static void cb_md_info(S_MD_INFO* info)
 
 static void cb_md_bt_pair_info(S_BT_PAIR_INFO* info)
 {
-    log_line("bluetooth pairing info: name=%s status=%u", info->name.c_str(), info->status);
+    log_line("phone.bluetooth_pairing name=\"%s\" status=%u", info->name.c_str(), info->status);
 }
 
 static void cb_video_encoder_init_done(S_VIDEO_ENCODER_INIT_DONE* info)
@@ -306,7 +316,8 @@ static void cb_video_encoder_init_done(S_VIDEO_ENCODER_INIT_DONE* info)
     put_be32(buffer + 4, info->height);
     put_be32(buffer + 8, info->frameRate);
     send_frame(CH_CMD, EV_VIDEO_INIT_DONE, buffer, sizeof(buffer));
-    log_line_debug("video encoder ready at %ux%u, %u fps", info->width, info->height, info->frameRate);
+    log_line_debug("video.encoder_ready width=%u height=%u fps=%u", info->width, info->height,
+                   info->frameRate);
 }
 
 static void cb_video_frame_rate_done(S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE* info)
@@ -314,7 +325,7 @@ static void cb_video_frame_rate_done(S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE* inf
     uint8_t buffer[4];
     put_be32(buffer, info->frameRate);
     send_frame(CH_CMD, EV_VIDEO_FPS_DONE, buffer, sizeof(buffer));
-    log_line("frame rate changed to %u fps", info->frameRate);
+    log_line("video.frame_rate_changed fps=%u", info->frameRate);
 }
 
 static void cb_tele_state(uint8_t state)
@@ -342,54 +353,54 @@ static void cb_tele_in_calling(void)
 static void cb_screen_on(void)
 {
     send_frame(CH_CMD, EV_SCREEN_ON, NULL, 0);
-    log_line_debug("phone screen on");
+    log_line_debug("phone.screen state=on");
 }
 
 static void cb_screen_off(void)
 {
     send_frame(CH_CMD, EV_SCREEN_OFF, NULL, 0);
-    log_line_debug("phone screen off");
+    log_line_debug("phone.screen state=off");
 }
 
 static void cb_screen_user_present(void)
 {
-    log_line("phone detected user present");
+    log_line("phone.user_present");
 }
 
 static void cb_foreground(void)
 {
     send_frame(CH_CMD, EV_FOREGROUND, NULL, 0);
-    log_line_debug("CarLife moved to foreground");
+    log_line_debug("phone.app_state state=foreground");
 }
 
 static void cb_background(void)
 {
     send_frame(CH_CMD, EV_BACKGROUND, NULL, 0);
-    log_line_debug("CarLife moved to background");
+    log_line_debug("phone.app_state state=background");
 }
 
 static void cb_go_to_desktop(void)
 {
     send_frame(CH_CMD, EV_GO_TO_DESKTOP, NULL, 0);
-    log_line_debug("phone returned to home screen");
+    log_line_debug("phone.app_state state=home");
 }
 
 static void cb_mic_wakeup(void)
 {
     send_frame(CH_CMD, EV_MIC_WAKEUP, NULL, 0);
-    log_line_debug("voice wakeup");
+    log_line_debug("voice.wakeup");
 }
 
 static void cb_mic_end(void)
 {
     send_frame(CH_CMD, EV_MIC_END, NULL, 0);
-    log_line_debug("voice recording ended");
+    log_line_debug("voice.record_stopped");
 }
 
 static void cb_mic_recog(void)
 {
     send_frame(CH_CMD, EV_MIC_RECOG, NULL, 0);
-    log_line_debug("voice recognition started");
+    log_line_debug("voice.recognition_started");
 }
 
 static void cb_module_status(S_MODULE_STATUS_LIST_MOBILE* list)
@@ -412,7 +423,8 @@ static void cb_module_status(S_MODULE_STATUS_LIST_MOBILE* list)
 
 static void cb_navi_next_turn(S_NAVI_NEXT_TURN_INFO* info)
 {
-    log_line("navigation turn prompt: action=%u nextTurn=%u road=%s", info->action, info->nextTurn, info->roadName.c_str());
+    log_line("navi.turn_prompt action=%u next_turn=%u road=\"%s\"", info->action, info->nextTurn,
+             info->roadName.c_str());
 }
 
 /* ------------------------------------------------------- Head unit identity
@@ -660,8 +672,8 @@ static const char* media_play_mode_name(uint32_t mode)
  * albumArt is a bitmap, so only its size is printed, in kB. */
 static void cb_media_info(S_MEDIA_INFO* info)
 {
-    log_line_debug("media info: source=\"%s\" song=\"%s\" artist=\"%s\" album=\"%s\" albumArt=%.1f kB "
-             "duration=%us playlistNum=%u songId=\"%s\" mode=%s (%u)",
+    log_line_debug("media.info source=\"%s\" song=\"%s\" artist=\"%s\" album=\"%s\" art_kb=%.1f "
+             "duration_s=%u playlist=%u song_id=\"%s\" mode=%s mode_id=%u",
              info->source.c_str(), info->song.c_str(), info->artist.c_str(), info->album.c_str(),
              (double)info->albumArt.size() / 1024.0, info->duration, info->playlistNum,
              info->songId.c_str(), media_play_mode_name(info->mode), info->mode);
@@ -669,18 +681,18 @@ static void cb_media_info(S_MEDIA_INFO* info)
 
 static void cb_media_progress_bar(S_MEDIA_PROGRESS_BAR* progress)
 {
-    log_line_debug("media progress: %u ms", progress->progressBar);
+    log_line_debug("media.progress pos_ms=%u", progress->progressBar);
 }
 
 static void cb_connect_exception(S_CONNECTION_EXCEPTION* exception)
 {
-    log_line_warn("phone reported a connection exception, type %u", exception->exceptionType);
+    log_line_warn("phone.connection_exception type=%u", exception->exceptionType);
 }
 
 static void cb_md_exit(void)
 {
     send_frame(CH_CMD, EV_MD_EXIT, NULL, 0);
-    log_line_debug("CarLife exited on phone");
+    log_line_debug("phone.app_exited");
 }
 
 /* ------------------------------------------------------- Audio/video channels */
@@ -692,8 +704,8 @@ static void send_audio_init(uint8_t channel, S_AUDIO_INIT_PARAMETER* param)
     put_be32(buffer + 4, param->channelConfig);
     put_be32(buffer + 8, param->sampleFormat);
     send_frame(channel, EV_AUDIO_INIT, buffer, sizeof(buffer));
-    log_line_debug("audio channel %u: %u Hz, channelConfig=%u, sampleFormat=%u", channel, param->sampleRate,
-             param->channelConfig, param->sampleFormat);
+    log_line_debug("audio.channel_ready ch=%u rate_hz=%u channel_config=%u sample_format=%u",
+             channel, param->sampleRate, param->channelConfig, param->sampleFormat);
 }
 
 static void cb_video_data(u8* data, u32 length)
@@ -804,7 +816,7 @@ static void* video_receive_thread(void*)
 
     while (lib->videoReceiveOperation() != -1) {
     }
-    log_line("video channel receiver stopped");
+    log_line("channel.stopped ch=video");
     return NULL;
 }
 
@@ -820,7 +832,7 @@ static void* media_receive_thread(void*)
 
     while (lib->mediaReceiveOperation() != -1) {
     }
-    log_line("audio channel receiver stopped");
+    log_line("channel.stopped ch=media");
     return NULL;
 }
 
@@ -833,7 +845,7 @@ static void* tts_receive_thread(void*)
 
     while (lib->ttsReceiveOperation() != -1) {
     }
-    log_line("navigation TTS channel receiver stopped");
+    log_line("channel.stopped ch=tts");
     return NULL;
 }
 
@@ -846,7 +858,7 @@ static void* vr_receive_thread(void*)
 
     while (lib->vrReceiveOperation() != -1) {
     }
-    log_line("voice channel receiver stopped");
+    log_line("channel.stopped ch=vr");
     return NULL;
 }
 
@@ -974,7 +986,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             action.y = get_be32(body + 8);
             lib->ctrlTouchAction(&action);
             /* Every drag point logs one line, which floods a debug run. */
-            /* log_line_debug("sending touch action %u at %u,%u", action.action, action.x, action.y); */
+            /* log_line_debug("touch.sent action=%u x=%u y=%u", action.action, action.x, action.y); */
             break;
         }
         case CMD_TOUCH_DOWN: {
@@ -985,7 +997,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchActionDown(&point);
-            log_line_debug("sending touch down at %u,%u", point.x, point.y);
+            log_line_debug("touch.sent action=down x=%u y=%u", point.x, point.y);
             break;
         }
         case CMD_TOUCH_UP: {
@@ -996,7 +1008,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchActionUp(&point);
-            log_line_debug("sending touch up at %u,%u", point.x, point.y);
+            log_line_debug("touch.sent action=up x=%u y=%u", point.x, point.y);
             break;
         }
         case CMD_TOUCH_MOVE: {
@@ -1007,7 +1019,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchActionMove(&point);
-            log_line_debug("sending touch move at %u,%u", point.x, point.y);
+            log_line_debug("touch.sent action=move x=%u y=%u", point.x, point.y);
             break;
         }
         case CMD_TOUCH_SINGLE_CLICK: {
@@ -1018,7 +1030,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchSigleClick(&point);
-            log_line_debug("sending touch single click at %u,%u", point.x, point.y);
+            log_line_debug("touch.sent action=click x=%u y=%u", point.x, point.y);
             break;
         }
         case CMD_TOUCH_DOUBLE_CLICK: {
@@ -1029,7 +1041,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchDoubleClick(&point);
-            log_line_debug("sending touch double click at %u,%u", point.x, point.y);
+            log_line_debug("touch.sent action=double_click x=%u y=%u", point.x, point.y);
             break;
         }
         case CMD_TOUCH_LONG_PRESS: {
@@ -1040,7 +1052,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
             lib->ctrlTouchLongPress(&point);
-            log_line_debug("sending touch long press at %u,%u", point.x, point.y);
+            log_line_debug("touch.sent action=long_press x=%u y=%u", point.x, point.y);
             break;
         }
         case CMD_HARD_KEY: {
@@ -1050,11 +1062,11 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_TOUCH_CAR_HARD_KEY_CODE key;
             key.keycode = get_be32(body);
             lib->ctrlTouchCarHardKeyCode(&key);
-            log_line_debug("sending hard key %s (0x%08X)", hard_key_name(key.keycode), key.keycode);
+            log_line_debug("key.sent name=%s code=0x%08X", hard_key_name(key.keycode), key.keycode);
             break;
         }
         default:
-            log_line_warn("ignoring a message with unknown control channel tag 0x%02X", (unsigned)tag);
+            log_line_warn("channel.unknown_tag ch=ctrl tag=0x%02X action=ignore", (unsigned)tag);
             break;
         }
         return;
@@ -1069,7 +1081,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             lib->sendVRRecordData((u8*)(body + 4), body_length - 4, timestamp);
             return;
         }
-        log_line_warn("ignoring a message with unknown voice channel tag 0x%02X", (unsigned)tag);
+        log_line_warn("channel.unknown_tag ch=vr tag=0x%02X action=ignore", (unsigned)tag);
     }
 }
 
@@ -1102,9 +1114,9 @@ static void serve_client(int fd)
         uint8_t channel = header[0];
         uint32_t payload_length = get_be32(header + 1);
         if (payload_length == 0 || payload_length > CL_MAX_PAYLOAD) {
-            log_line_warn("dropping the backend connection: it sent a frame of %u bytes on channel %u, outside "
-                          "1..%u",
-                          payload_length, (unsigned)channel, (unsigned)CL_MAX_PAYLOAD);
+            log_line_warn("link.frame_rejected channel=%u bytes=%u channel_max=%u "
+                          "action=drop_connection",
+                          (unsigned)channel, payload_length, (unsigned)CL_MAX_PAYLOAD);
             break;
         }
         payload.resize(payload_length);
@@ -1127,7 +1139,7 @@ static void* backend_loop(void*)
             if (errno == EINTR) {
                 continue;
             }
-            log_line_error("accept failed: %s", strerror(errno));
+            log_line_error("link.accept_failed err=%s", strerror(errno));
             return NULL;
         }
         set_close_on_exec(fd);
@@ -1138,7 +1150,7 @@ static void* backend_loop(void*)
         }
         g_client_fd = fd;
         pthread_mutex_unlock(&g_send_lock);
-        log_line("Go backend connected");
+        log_line("link.backend_connected");
 
         broadcast_status();
 
@@ -1150,7 +1162,7 @@ static void* backend_loop(void*)
         }
         pthread_mutex_unlock(&g_send_lock);
         ::close(fd);
-        log_line("Go backend disconnected, waiting for reconnect");
+        log_line("link.backend_disconnected action=wait");
     }
 }
 
@@ -1159,7 +1171,7 @@ static int listen_unix(const char* path)
     ::unlink(path);
     int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
-        log_line_error("failed to create socket: %s", strerror(errno));
+        log_line_error("link.socket_failed step=create err=%s", strerror(errno));
         return -1;
     }
     set_close_on_exec(fd);
@@ -1168,12 +1180,12 @@ static int listen_unix(const char* path)
     address.sun_family = AF_UNIX;
     strncpy(address.sun_path, path, sizeof(address.sun_path) - 1);
     if (::bind(fd, (struct sockaddr*)&address, sizeof(address)) != 0) {
-        log_line_error("failed to bind %s: %s", path, strerror(errno));
+        log_line_error("link.socket_failed step=bind path=%s err=%s", path, strerror(errno));
         ::close(fd);
         return -1;
     }
     if (::listen(fd, 4) != 0) {
-        log_line_error("failed to listen: %s", strerror(errno));
+        log_line_error("link.socket_failed step=listen err=%s", strerror(errno));
         ::close(fd);
         return -1;
     }
@@ -1184,7 +1196,7 @@ static void start_thread(void* (*entry)(void*), const char* name)
 {
     pthread_t thread;
     if (pthread_create(&thread, NULL, entry, NULL) != 0) {
-        log_line_error("failed to create %s thread", name);
+        log_line_error("thread.start_failed name=%s", name);
         return;
     }
     pthread_detach(thread);
@@ -1331,7 +1343,7 @@ int main(int argc, char** argv)
         bridge_shutdown();
         return 1;
     }
-    log_line("listening on %s", socket_path);
+    log_line("link.listening path=%s", socket_path);
 
     CCarLifeLib* lib = CCarLifeLib::getInstance();
     lib->carLifeLibInit();
@@ -1341,17 +1353,18 @@ int main(int argc, char** argv)
         if (g_connection_result == 0) {
             break;
         }
-        log_line_warn("channel setup attempt %d failed (return code %d), retrying in 1 second", attempt, g_connection_result);
+        log_line_warn("session.channel_setup_failed attempt=%d code=%d retry_ms=1000", attempt,
+                      g_connection_result);
         sleep(1);
     }
     if (g_connection_result != 0) {
-        log_line_error("failed to establish the six channels, exiting");
+        log_line_error("session.channel_setup_failed action=exit");
         ::close(g_listen_fd);
         ::unlink(socket_path);
         bridge_shutdown();
         return 1;
     }
-    log_line("all six channels connected (127.0.0.1 local ports)");
+    log_line("session.channels_connected count=6 addr=127.0.0.1");
 
     /* There is no control-channel receive thread: CTRL is a send-only channel here.
      * CTranRecvPackageProcess::receivePackageHead() has no CTRL_CHANNEL case, so it takes the

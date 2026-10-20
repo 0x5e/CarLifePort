@@ -102,7 +102,7 @@ static void wait_threads(int timeout_ms)
         waited += 50;
     }
     if (g_busy_threads > 0) {
-        aoa_log_warn("still %d worker thread(s) not exited, continuing shutdown", g_busy_threads);
+        aoa_log_warn("bridge.shutdown threads_pending=%d action=continue", g_busy_threads);
     }
 }
 
@@ -248,14 +248,14 @@ static void *channel_rx(void *param)
         }
         body = carlife_body_len(ch->id, head);
         if (body > carlife_max_body(ch->id)) {
-            aoa_log_warn("%s: message body length %u exceeds the cap %u, dropping this connection", ch->name, body,
-                    carlife_max_body(ch->id));
+            aoa_log_warn("bridge.rx_rejected ch=%s len=%u cap=%u action=drop_connection", ch->name,
+                         body, carlife_max_body(ch->id));
             report_disconnect = 0;
             break;
         }
         need = head_len + body;
         if (ensure_cap(&buf, &cap, need != 0 ? need : 1) != 0) {
-            aoa_log_error("%s: failed to allocate %u-byte buffer", ch->name, need);
+            aoa_log_error("bridge.alloc_failed ch=%s bytes=%u", ch->name, need);
             report_disconnect = 0;
             break;
         }
@@ -268,7 +268,7 @@ static void *channel_rx(void *param)
         r = aoa_send_message(&g_dev, ch->id, buf, need);
         pthread_mutex_unlock(&g_usb_tx_lock);
         if (r != 0) {
-            aoa_log_error("%s: send to USB failed: %s", ch->name, libusb_error_name(r));
+            aoa_log_error("bridge.usb_send_failed ch=%s err=%s", ch->name, libusb_error_name(r));
             report_disconnect = 0;
             aoa_stop = 1;
             break;
@@ -283,7 +283,7 @@ static void *channel_rx(void *param)
         ch->peer[0] = '\0';
         pthread_mutex_unlock(&ch->lock);
         if (report_disconnect) {
-            aoa_log("%s: client disconnected", ch->name);
+            aoa_log("bridge.client_closed ch=%s", ch->name);
         }
     } else {
         pthread_mutex_unlock(&ch->lock);
@@ -319,15 +319,15 @@ static void accept_one(struct channel *ch)
     pthread_mutex_unlock(&ch->lock);
 
     if (old >= 0) {
-        aoa_log("%s: new connection %s replaces the old one", ch->name, ch->peer);
+        aoa_log("bridge.client_replaced ch=%s peer=%s", ch->name, ch->peer);
         shutdown(old, SHUT_RDWR); /* the old rx thread will exit and close on its own */
     } else {
-        aoa_log("%s: client connected %s", ch->name, ch->peer);
+        aoa_log("bridge.client_connected ch=%s peer=%s", ch->name, ch->peer);
     }
 
     arg = (struct rx_arg *)malloc(sizeof(*arg));
     if (arg == NULL) {
-        aoa_log_error("%s: failed to allocate thread argument", ch->name);
+        aoa_log_error("bridge.alloc_failed ch=%s what=rx_arg", ch->name);
         pthread_mutex_lock(&ch->lock);
         ch->client_fd = -1;
         ch->peer[0] = '\0';
@@ -338,7 +338,7 @@ static void accept_one(struct channel *ch)
     arg->ch = ch;
     arg->fd = fd;
     if (pthread_create(&tid, NULL, channel_rx, arg) != 0) {
-        aoa_log_error("%s: failed to create receive thread", ch->name);
+        aoa_log_error("bridge.thread_failed ch=%s role=rx", ch->name);
         pthread_mutex_lock(&ch->lock);
         ch->client_fd = -1;
         ch->peer[0] = '\0';
@@ -418,7 +418,7 @@ static int rx_fill(struct rx_stream *s, unsigned int need)
          * last few bytes in a second round trip. */
         want = (want + packet - 1) / packet * packet;
         if (ensure_cap(&s->buf, &s->cap, (size_t)s->len + want) != 0) {
-            aoa_log_error("failed to allocate %u-byte receive buffer", s->len + want);
+            aoa_log_error("bridge.alloc_failed what=rx_buffer bytes=%u", s->len + want);
             return -1;
         }
         st = aoa_read_some(&g_dev, s->buf + s->len, want);
@@ -481,9 +481,7 @@ static int rx_sync(struct rx_stream *s)
             s->off += skip;
             s->skipped += skip;
             if (s->skipped > 0) {
-                aoa_log_warn("USB stream: dropped %llu byte(s) that did not start a frame, "
-                             "resuming at a frame head",
-                             s->skipped);
+                aoa_log_warn("bridge.rx_resync skipped_bytes=%llu", s->skipped);
                 s->skipped = 0;
             }
             return 0;
@@ -504,7 +502,7 @@ static int usb_rx_loop(void)
     struct rx_stream rx;
 
     memset(&rx, 0, sizeof(rx));
-    aoa_log("start forwarding (USB -> local / local -> USB), Ctrl-C to stop");
+    aoa_log("bridge.forwarding_started");
 
     for (;;) {
         unsigned int ch_id, len, head_total, body;
@@ -544,18 +542,18 @@ static int usb_rx_loop(void)
         body = carlife_body_len(ch_id, msg);
         if (head_total + body != len) {
             if (ch_id == 1 || ch_id == 6) {
-                aoa_log_warn("%s: dropping a %u-byte frame; its 2-byte length field holds %u, which leaves %u bytes "
-                             "unexplained (the field tops out at 65535)",
+                aoa_log_warn("bridge.frame_rejected ch=%s len=%u field_value=%u unexplained_bytes=%u "
+                             "field_bytes=2 reason=length_mismatch",
                              ch->name, len, body, len - head_total - body);
             } else {
-                aoa_log_warn("%s: dropping a %u-byte frame; its 4-byte length field holds %u, which disagrees with "
-                             "the frame",
+                aoa_log_warn("bridge.frame_rejected ch=%s len=%u field_value=%u field_bytes=4 "
+                             "reason=length_mismatch",
                              ch->name, len, body);
             }
             ch->rejected++;
         } else if (body > carlife_max_body(ch_id)) {
-            aoa_log_warn("%s: dropping a %u-byte frame; its body of %u bytes exceeds the channel cap %u", ch->name,
-                         len, body, carlife_max_body(ch_id));
+            aoa_log_warn("bridge.frame_rejected ch=%s len=%u body=%u cap=%u reason=body_over_cap",
+                         ch->name, len, body, carlife_max_body(ch_id));
             ch->rejected++;
         } else {
             pthread_mutex_lock(&ch->lock);
@@ -566,7 +564,7 @@ static int usb_rx_loop(void)
                 continue;
             }
             if (write_socket_full(fd, msg, len) != 0) {
-                aoa_log_warn("%s: write to local socket failed, dropping this connection", ch->name);
+                aoa_log_warn("bridge.local_write_failed ch=%s action=drop_connection", ch->name);
                 pthread_mutex_lock(&ch->lock);
                 if (ch->client_fd == fd) {
                     shutdown(fd, SHUT_RDWR);
@@ -590,17 +588,21 @@ static int usb_rx_loop(void)
                 last_tx = tx_sum;
                 last_rx = rx_sum;
                 last_drop = drop_sum;
-                aoa_log_debug("USB->local %llu frames | local->USB %llu frames | dropped (no client) %llu frames", tx_sum,
-                              rx_sum, drop_sum);
+                aoa_log_debug("bridge.traffic usb_to_local_frames=%llu local_to_usb_frames=%llu "
+                              "dropped_no_client=%llu",
+                              tx_sum, rx_sum, drop_sum);
                 for (i = 1; i <= AOA_CHANNEL_COUNT; i++) {
                     if (g_ch[i].tx_frames == 0 && g_ch[i].rx_frames == 0 && g_ch[i].dropped == 0) {
                         continue;
                     }
-                    aoa_log_debug("    %-5s ↓%llu/%llu B  ↑%llu/%llu B%s", g_ch[i].name, g_ch[i].tx_frames,
-                                  g_ch[i].tx_bytes, g_ch[i].rx_frames, g_ch[i].rx_bytes,
-                                  g_ch[i].client_fd < 0 ? "  (no client)" : "");
+                    aoa_log_debug("bridge.channel_traffic ch=%s usb_to_local_frames=%llu "
+                                  "usb_to_local_bytes=%llu local_to_usb_frames=%llu "
+                                  "local_to_usb_bytes=%llu client=%s",
+                                  g_ch[i].name, g_ch[i].tx_frames, g_ch[i].tx_bytes, g_ch[i].rx_frames,
+                                  g_ch[i].rx_bytes, g_ch[i].client_fd < 0 ? "none" : "up");
                     if (g_ch[i].rejected != 0) {
-                        aoa_log_debug("    %-5s rejected %llu unroutable frame(s)", g_ch[i].name, g_ch[i].rejected);
+                        aoa_log_debug("bridge.channel_rejected ch=%s frames=%llu", g_ch[i].name,
+                                      g_ch[i].rejected);
                     }
                 }
             }
@@ -622,7 +624,7 @@ static int setup_listeners(const char *host)
 
         fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) {
-            aoa_log_error("%s: socket creation failed: %s", ch->name, strerror(errno));
+            aoa_log_error("bridge.socket_failed ch=%s step=create err=%s", ch->name, strerror(errno));
             return -1;
         }
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -630,22 +632,23 @@ static int setup_listeners(const char *host)
         sa.sin_family = AF_INET;
         sa.sin_port = htons(ch->port);
         if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
-            aoa_log_error("invalid listen address: %s", host);
+            aoa_log_error("bridge.socket_failed step=parse_address addr=%s", host);
             close(fd);
             return -1;
         }
         if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
-            aoa_log_error("%s: bind %s:%u failed: %s", ch->name, host, ch->port, strerror(errno));
+            aoa_log_error("bridge.socket_failed ch=%s step=bind addr=%s port=%u err=%s", ch->name, host,
+                          ch->port, strerror(errno));
             close(fd);
             return -1;
         }
         if (listen(fd, 1) != 0) {
-            aoa_log_error("%s: listen failed: %s", ch->name, strerror(errno));
+            aoa_log_error("bridge.socket_failed ch=%s step=listen err=%s", ch->name, strerror(errno));
             close(fd);
             return -1;
         }
         ch->listen_fd = fd;
-        aoa_log("  listening on %s:%u  (%s)", host, ch->port, ch->name);
+        aoa_log("bridge.listening ch=%s addr=%s port=%u", ch->name, host, ch->port);
     }
     return 0;
 }
@@ -706,16 +709,16 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
             /* Said once: the phone can stay away for minutes, and repeating this would
              * scroll the log while nothing changes. */
             if (!no_device_logged) {
-                aoa_log("no phone yet, waiting: plug it in and make sure no other "
-                        "application is using the USB device");
+                aoa_log("usb.device_missing action=wait "
+                        "hint=\"plug the phone in; nothing else may hold it\"");
                 no_device_logged = 1;
             }
             goto retry;
         }
 
         device_seen = 1;
-        aoa_log("found %04x:%04x%s", dev.vid, dev.pid,
-                is_accessory ? "  [already in accessory mode]" : "  [normal mode]");
+        aoa_log("usb.device_found vid=%04x pid=%04x mode=%s", dev.vid, dev.pid,
+                is_accessory ? "accessory" : "normal");
 
         if (is_accessory) {
             if (!session_dropped) {
@@ -725,7 +728,7 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
                  * with the dimensions it already has, so it never re-sends them. The only state
                  * change it does rebuild on is the connection dropping. */
                 session_dropped = 1;
-                aoa_log("  session opened by an earlier process, resetting the port so the phone starts a new one");
+                aoa_log("usb.session_stale action=port_reset");
                 aoa_reset_port(&dev);
                 /* The phone is away for a moment by design, so the "nothing plugged in"
                  * warning would be wrong here. */
@@ -734,8 +737,8 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
                 attempt++;
                 continue;
             }
-            aoa_log_warn("  the phone kept its accessory session across a port reset, carrying on with it");
-            aoa_log_warn("  the picture stays undecodable until the phone starts a new session: replug it");
+            aoa_log_warn("usb.session_stale action=continue note=\"port reset did not clear it\"");
+            aoa_log_warn("usb.session_stale video=undecodable action=replug");
         } else {
             if (aoa_handshake(&dev, 1) != 0) {
                 aoa_close(&dev);
@@ -743,7 +746,7 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
             }
             aoa_close(&dev);
             if (aoa_wait_accessory(vid, pid, &dev) != 0) {
-                aoa_log_warn("  51/52/53 were accepted, but the device did not reappear in accessory mode");
+                aoa_log_warn("usb.accessory_missing handshake=ok action=retry");
                 goto retry;
             }
         }
@@ -752,7 +755,7 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
             aoa_close(&dev);
             goto retry;
         }
-        aoa_log("accessory endpoints IN=0x%02x OUT=0x%02x", dev.ep_in, dev.ep_out);
+        aoa_log("usb.accessory_endpoints ep_in=0x%02x ep_out=0x%02x", dev.ep_in, dev.ep_out);
         *out = dev;
         return 0;
 
@@ -760,7 +763,7 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
         /* Only a device that was found but could not be used gets this line; with nothing
          * plugged in, the line above already said what is missing. */
         if (device_seen && !not_ready_logged) {
-            aoa_log_warn("device not ready, retrying");
+            aoa_log_warn("usb.device_not_ready action=retry");
             not_ready_logged = 1;
         }
         sleep(1);
@@ -798,7 +801,7 @@ int bridge_list_devices(void)
     if (aoa_init() != 0) {
         return 1;
     }
-    aoa_log("USB device list:");
+    aoa_log("usb.device_list");
     aoa_list_devices();
     aoa_fini();
     return 0;
@@ -820,13 +823,13 @@ int bridge_start(const char *host, int vid, int pid)
         return 1;
     }
 
-    aoa_log("== 1. waiting for a phone ==");
+    aoa_log("usb.acquire step=wait_for_phone");
     if (acquire_device(vid, pid, &g_dev) != 0) {
         aoa_fini();
         return 1;
     }
 
-    aoa_log("== 2. start local channel listeners ==");
+    aoa_log("usb.acquire step=open_listeners");
     if (setup_listeners(host) != 0) {
         shutdown_listeners();
         aoa_close(&g_dev);
@@ -835,7 +838,7 @@ int bridge_start(const char *host, int vid, int pid)
     }
 
     if (pthread_create(&tid, NULL, accept_loop, NULL) != 0) {
-        aoa_log_error("failed to create accept thread");
+        aoa_log_error("bridge.thread_failed role=accept");
         shutdown_listeners();
         aoa_close(&g_dev);
         aoa_fini();
@@ -843,7 +846,7 @@ int bridge_start(const char *host, int vid, int pid)
     }
     pthread_detach(tid);
 
-    aoa_log("== 3. USB link ready ==");
+    aoa_log("usb.acquire step=link_ready");
     return 0;
 }
 
@@ -852,9 +855,9 @@ int bridge_loop(void)
     int rc = usb_rx_loop();
 
     if (rc != 0) {
-        aoa_log_error("USB receive loop ended (error)");
+        aoa_log_error("bridge.loop_ended result=failed action=exit");
     } else {
-        aoa_log("USB receive loop ended (clean exit)");
+        aoa_log("bridge.loop_ended result=clean action=exit");
     }
     return rc;
 }

@@ -126,7 +126,7 @@ func (h *linkClient) run(ctx context.Context) {
 		conn, err := net.Dial("unix", h.path)
 		if err != nil {
 			if !outageLogged {
-				infof(moduleLink, "waiting for carlife-link at %s", h.path)
+				infof(moduleLink, "link.waiting path=%s", h.path)
 				outageLogged = true
 			}
 			if !sleepContext(ctx, reconnectInterval) {
@@ -136,7 +136,7 @@ func (h *linkClient) run(ctx context.Context) {
 		}
 		outageLogged = false
 
-		infof(moduleLink, "connected to carlife-link: %s", h.path)
+		infof(moduleLink, "link.connected path=%s", h.path)
 		h.writeMu.Lock()
 		h.conn = conn
 		h.writeMu.Unlock()
@@ -154,7 +154,7 @@ func (h *linkClient) run(ctx context.Context) {
 		conn.Close()
 		// This line is the outage notice, so the failed dials that follow stay silent
 		// until the link is back.
-		infof(moduleLink, "disconnected from carlife-link, reconnecting")
+		infof(moduleLink, "link.disconnected action=reconnect")
 		outageLogged = true
 		if h.onState != nil {
 			h.onState(false)
@@ -171,8 +171,8 @@ func (h *linkClient) readLoop(conn net.Conn) {
 		channel := header[0]
 		length := binary.BigEndian.Uint32(header[1:])
 		if length == 0 || length > maxFramePayload {
-			warnf(moduleLink, "carlife-link sent a frame of %d bytes on channel %d, outside 1..%d; closing the connection",
-				length, channel, maxFramePayload)
+			warnf(moduleLink, "link.frame_rejected channel=%d bytes=%d channel_max=%d action=close_connection",
+				channel, length, maxFramePayload)
 			return
 		}
 		payload := make([]byte, length)

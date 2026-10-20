@@ -26,7 +26,7 @@ type certificateAlertWriter struct{}
 func (certificateAlertWriter) Write(p []byte) (int, error) {
 	line := strings.TrimSpace(string(p))
 	if !isCertificateAlert(line) {
-		warnf(moduleViewer, "%s", line)
+		warnf(moduleViewer, "tls.output line=%q", line)
 	}
 	return len(p), nil
 }

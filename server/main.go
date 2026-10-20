@@ -122,7 +122,7 @@ func machineID() string {
 	}
 	// No identifier from the platform (a stripped down system, or a lookup that failed):
 	// the hostname is what is left, even though two machines can share one.
-	warnf(moduleSelf, "no host uuid available, reporting the hostname as the head unit id")
+	warnf(moduleSelf, "process.host_uuid_missing action=use_hostname")
 	return hostName()
 }
 
@@ -136,7 +136,8 @@ func parseVideoMode(value string) (int, int, int) {
 	heightPixels, heightErr := strconv.Atoi(height)
 	fps, fpsErr := strconv.Atoi(rate)
 	if !hasRate || !hasSize || widthErr != nil || heightErr != nil || fpsErr != nil {
-		fatalf(moduleSelf, "CL_VIDEO_MODE=%q is not <width>x<height>@<fps>, for example 1920x720@60", value)
+		fatalf(moduleSelf, "config.invalid name=CL_VIDEO_MODE value=%q want=WxH@fps example=1920x720@60",
+			value)
 	}
 	return widthPixels, heightPixels, fps
 }
@@ -279,7 +280,7 @@ func main() {
 	// alone.
 	certFile, keyFile, err := selfSignedCertificate(certificateDir())
 	if err != nil {
-		fatalf(moduleSelf, "cannot prepare the TLS certificate: %v", err)
+		fatalf(moduleSelf, "tls.certificate_failed err=%v", err)
 	}
 	// Handshake failures go through ErrorLog. The standard logger would stamp its own
 	// timestamp; the writer puts the line through logLine instead so it keeps the level
@@ -288,13 +289,13 @@ func main() {
 
 	// Reported before the link is started, so that the addresses are on screen even when
 	// the first connection to the phone fails.
-	infof(moduleSelf, "service started")
+	infof(moduleSelf, "process.started")
 	for _, entry := range viewerURLs(cfg.addr, "https") {
-		infof(moduleSelf, "viewer URL   %s", entry)
+		infof(moduleSelf, "process.viewer_url url=%s", entry)
 	}
-	infof(moduleSelf, "web assets   embedded")
-	infof(moduleSelf, "socket       %s", defaultSocketPath)
-	infof(moduleSelf, "starting     %s", cfg.linkPath)
+	infof(moduleSelf, "process.web_assets source=embedded")
+	infof(moduleSelf, "process.socket path=%s", defaultSocketPath)
+	infof(moduleSelf, "process.link path=%s", cfg.linkPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -303,7 +304,7 @@ func main() {
 	// reaped it: exiting first orphans it, and an orphaned link keeps the USB device
 	// claimed.
 	if err := checkSibling(cfg); err != nil {
-		fatalf(moduleSelf, "%v", err)
+		fatalf(moduleSelf, "process.sibling_check_failed err=%v", err)
 	}
 	supervisorDone := make(chan struct{})
 	go func() {
@@ -325,8 +326,8 @@ func main() {
 	if serveErr != nil && serveErr != http.ErrServerClosed {
 		stop()
 		<-supervisorDone
-		fatalf(moduleSelf, "HTTP server exited: %v", serveErr)
+		fatalf(moduleSelf, "process.http_exit err=%v", serveErr)
 	}
 	<-supervisorDone
-	infof(moduleSelf, "stopped")
+	infof(moduleSelf, "process.stopped")
 }

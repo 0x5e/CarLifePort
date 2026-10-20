@@ -63,7 +63,8 @@ func (s *supervisor) run(ctx context.Context) {
 		link, err := startChild(moduleLink, s.linkPath, s.linkArgs...)
 		if err != nil {
 			// Nothing is running, so there is nothing to wait for: back off and retry.
-			errorf(moduleSupervisor, "cannot start %s: %v", s.linkPath, err)
+			errorf(moduleSupervisor, "supervisor.spawn_failed path=%s err=%v",
+				s.linkPath, err)
 			if !waitOrStop(ctx, restartDelay) {
 				return
 			}
@@ -73,14 +74,14 @@ func (s *supervisor) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 		case err := <-link.done:
-			infof(moduleSupervisor, "carlife-link exited (%s), rebuilding the link", exitReason(err))
+			infof(moduleSupervisor, "supervisor.child_exited reason=%s action=rebuild", exitReason(err))
 		}
 
 		link.stop()
 		if ctx.Err() != nil {
 			return
 		}
-		infof(moduleSupervisor, "rebuilding the link in %s (Ctrl-C to stop)", restartDelay)
+		infof(moduleSupervisor, "supervisor.rebuild delay=%s stop=ctrl-c", restartDelay)
 		if !waitOrStop(ctx, restartDelay) {
 			return
 		}
@@ -115,7 +116,7 @@ func startChild(module, path string, args ...string) (*childProcess, error) {
 	}
 	// The child holds the only remaining write end, so reading until EOF ends with it.
 	write.Close()
-	infof(moduleSupervisor, "started %s (pid %d)", path, cmd.Process.Pid)
+	infof(moduleSupervisor, "supervisor.child_started path=%s pid=%d", path, cmd.Process.Pid)
 
 	child := &childProcess{module: module, cmd: cmd, done: make(chan error, 1)}
 	go logChild(module, read)
@@ -167,7 +168,7 @@ func (c *childProcess) stop() {
 	select {
 	case <-c.done:
 	case <-time.After(stopTimeout):
-		warnf(moduleSupervisor, "%s did not exit after SIGTERM, killing it", c.module)
+		warnf(moduleSupervisor, "supervisor.kill module=%s reason=sigterm_timeout", c.module)
 		c.cmd.Process.Kill()
 		<-c.done
 	}
