@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>carlife-link</string>
+	<key>CFBundleIdentifier</key>
+	<string>cn.carlifeport.link</string>
+	<key>CFBundleName</key>
+	<string>CarLifePort Link</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<!-- CoreLocation only answers a process that carries these keys: without them the
+	     authorization request fails at once and the status stays notDetermined forever,
+	     which is what a bare executable gets. -->
+	<key>NSLocationUsageDescription</key>
+	<string>Reads a coarse position and reports it to the phone as vehicle position data.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Reads a coarse position and reports it to the phone as vehicle position data.</string>
+</dict>
+</plist>

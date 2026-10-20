@@ -6,37 +6,49 @@
 #
 # The transport half (aoa.c, bridge.c) is C and needs libusb; md_authen.c is C and needs
 # libcrypto for the RSA check of the phone's authentication response; the protocol stack
-# half (main.cpp) is C++ and needs the CarLife headers. Only main.cpp is compiled as C++, but
-# the final link is done with the C++ compiler because the library is C++.
+# half (main.cpp) is C++ and needs the CarLife headers; gps.mm is Objective-C++ and needs
+# CoreLocation for the Wi-Fi position. Only gps.mm is compiled as Objective-C++, but the
+# final link is done with the C++ compiler because the library is C++.
 
 ROOT       := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 PB         := $(ROOT)/.build/pb
 CARLIFE    := $(ROOT)/vendor/carlife/CarLife-Vehicle-Lib/LibSource
 
 # Run-time artifacts go to dist/, where carlifed looks for its siblings. The library is
-# resolved relative to this binary (rpath @loader_path) instead of an absolute build path,
-# so dist/ can be copied or moved as a whole.
+# resolved relative to this binary (rpath) instead of an absolute build path, so dist/ can
+# be copied or moved as a whole.
+#
+# The binary lives inside an .app bundle because CoreLocation refuses a bare executable:
+# without the usage-description keys in an Info.plist the authorization request fails
+# immediately and the status stays notDetermined, so no fix ever arrives. The bundle is
+# signed ad-hoc for the same reason -- an unsigned one is not granted either. Launching
+# Contents/MacOS/carlife-link directly is enough; it does not have to be started with
+# `open`, so the parent keeps the child's stdout and stderr.
 DIST       := $(ROOT)/dist
+BUNDLE     := $(DIST)/CarLifeLink.app
 
 CC         ?= cc
 CXX        ?= clang++
 CFLAGS     += -O2 -g -Wall -Wextra -std=gnu11 $(shell pkg-config --cflags libusb-1.0 libcrypto)
 CXXFLAGS   += -std=gnu++11 -O2 -Wall -Wextra -I$(CARLIFE)/include -I$(PB)/include
-LDFLAGS    += -L$(DIST) -lcarlifevehicle -lpthread -Wl,-rpath,@loader_path
-LDLIBS     += $(shell pkg-config --libs libusb-1.0 libcrypto)
+LDFLAGS    += -L$(DIST) -lcarlifevehicle -lpthread -Wl,-rpath,@loader_path/../../..
+LDLIBS     += $(shell pkg-config --libs libusb-1.0 libcrypto) -framework CoreLocation -framework Foundation
 
-TARGET     := $(DIST)/carlife-link
-OBJECTS    := aoa.o bridge.o md_authen.o main.o
+TARGET     := $(BUNDLE)/Contents/MacOS/carlife-link
+PLIST      := $(BUNDLE)/Contents/Info.plist
+OBJECTS    := aoa.o bridge.o md_authen.o main.o gps.o
 LIBRARY    := $(DIST)/libcarlifevehicle.dylib
 
 .PHONY: all clean
 
 all: $(TARGET)
 
-$(TARGET): $(OBJECTS) $(LIBRARY)
-	@mkdir -p $(DIST)
+$(TARGET): $(OBJECTS) $(LIBRARY) Info.plist
+	@mkdir -p $(dir $@)
 	$(CXX) -o $@ $(OBJECTS) $(LDFLAGS) $(LDLIBS)
-	@echo "Build complete: $@"
+	@cp Info.plist $(PLIST)
+	@codesign --force --sign - $(BUNDLE)
+	@echo "Build complete: $(BUNDLE)"
 
 aoa.o: aoa.c aoa.h
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -47,8 +59,11 @@ bridge.o: bridge.c aoa.h bridge.h
 md_authen.o: md_authen.c md_authen.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-main.o: main.cpp protocol.h bridge.h md_authen.h log.h
+main.o: main.cpp protocol.h bridge.h md_authen.h gps.h log.h
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+gps.o: gps.mm gps.h
+	$(CXX) $(CXXFLAGS) -fobjc-arc -c -o $@ $<
 
 # The library is a prerequisite rather than a phony existence check: this way the target is
 # relinked when the library changes and not on every run. It is built by `make sdk` in the
@@ -59,4 +74,5 @@ $(LIBRARY):
 	@exit 1
 
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -f $(OBJECTS)
+	rm -rf $(BUNDLE)

@@ -493,9 +493,15 @@ func textField(info map[string]any, key string) string {
 	}
 }
 
+// The phone decides what the head unit is allowed to do from this number. 3.0 is the
+// smallest version it accepts vehicle data subscriptions on: with 2 or below, its
+// CarDataSubscribeManager discards the reply to MSG_CMD_CAR_DATA_SUBSCRIBE_DONE (it logs
+// that the head unit protocol has to be 3) and GPS data is never requested. 3.2 and 4.0
+// additionally put the phone on its newer vehicle paths (isNewVehicleVersion), which change
+// how video and audio are negotiated, so they are not claimed here.
 func (s *session) startHandshake() {
-	if err := s.link.sendProtocolVersion(1, 0); err != nil {
-		errorf(moduleSession, "failed to send protocol version: %v; the handshake stops here", err)
+	if err := s.link.sendProtocolVersion(3, 0); err != nil {
+		errorf(moduleSession, "session.protocol_version_send_failed err=%v consequence=handshake_stopped", err)
 	}
 }
 

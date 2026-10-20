@@ -181,7 +181,7 @@ func loadConfig() config {
 	// web client's display panel changes it at runtime.
 	width, height, fps := parseVideoMode(envString("CL_VIDEO_MODE", "1280x720@60"))
 	return config{
-		linkPath: envString("CL_LINK", filepath.Join(dir, "carlife-link")),
+		linkPath: envString("CL_LINK", filepath.Join(dir, "CarLifeLink.app", "Contents", "MacOS", "carlife-link")),
 		// The default is reachable from other machines on the LAN; one viewer URL is
 		// printed per interface. 127.0.0.1:8080 keeps the page local.
 		addr: envString("CL_WEB_ADDR", "0.0.0.0:8080"),
@@ -222,7 +222,8 @@ defaults to a file next to this binary, which is where the Makefile puts it.
   CL_LOG_LEVEL     info                    debug, info, warn or error; debug adds the
                                            per-frame telemetry and the link's copy of
                                            the events this process already reports
-  CL_LINK          <binary dir>/carlife-link         the link to start
+  CL_LINK          <binary dir>/CarLifeLink.app/Contents/MacOS/carlife-link
+                                           the link to start
 
 CL_LINK is used as given, relative paths included.
 `

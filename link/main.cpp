@@ -14,6 +14,7 @@
 #include "CCarLifeLibWrapper.h"
 #include "CConnectManager.h"
 #include "bridge.h"
+#include "gps.h"
 #include "log.h"
 #include "md_authen.h"
 #include "protocol.h"
@@ -44,6 +45,20 @@ using namespace CCarLifeLibH;
 static int g_listen_fd = -1;
 static int g_client_fd = -1;
 static pthread_mutex_t g_send_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Serializes every message the library writes on the command channel. The library builds
+ * a message as an 8-byte header plus a body and hands them to two separate send() calls
+ * without a lock (CConnectManager::writeCmdData), so two threads writing at the same time
+ * leave a header and another message's body next to each other. The backend thread writes
+ * commands from the Go side, the command channel thread writes the replies, and the
+ * vehicle data reporter (see below) adds a third writer that runs on a timer. */
+static pthread_mutex_t g_cmd_write_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Scope guard for g_cmd_write_lock, held across one complete library call. */
+struct CmdWriteLock {
+    CmdWriteLock() { pthread_mutex_lock(&g_cmd_write_lock); }
+    ~CmdWriteLock() { pthread_mutex_unlock(&g_cmd_write_lock); }
+};
 
 /* Return code of connectionSetup(); 0 means all six channels are established */
 static int g_connection_result = -1;
@@ -457,18 +472,20 @@ static void send_statistic_info(void)
     info.connectTime = 0; /* the units of this counter are not documented */
     info.crashLog = "";
 
+    CmdWriteLock lock;
     if (CCarLifeLib::getInstance()->cmdStatisticInfo(&info) < 0) {
-        log_line_error("failed to send statistics info");
+        log_line_error("session.statistic_info_send_failed");
         return;
     }
-    log_line("sent statistics info (channel=%s, cuid=%s)", info.channel.c_str(), info.cuid.c_str());
+    log_line("session.statistic_info_sent channel=%s cuid=%s", info.channel.c_str(),
+             info.cuid.c_str());
 }
 
 static void send_hu_info(void)
 {
     struct utsname uts;
     if (uname(&uts) != 0) {
-        log_line_error("failed to read host identity: %s", strerror(errno));
+        log_line_error("session.hu_info_failed step=read_identity err=%s", strerror(errno));
         return;
     }
 
@@ -497,11 +514,12 @@ static void send_hu_info(void)
     info.token = ""; /* issued by Baidu together with the channel number */
     info.btaddress = "";
 
+    CmdWriteLock lock;
     if (CCarLifeLib::getInstance()->cmdHUInfro(&info) < 0) {
-        log_line_error("failed to send head unit info");
+        log_line_error("session.hu_info_send_failed");
         return;
     }
-    log_line("sent head unit info (model=%s, host=%s, release=%s)", info.model.c_str(),
+    log_line("session.hu_info_sent model=%s host=%s release=%s", info.model.c_str(),
              info.host.c_str(), info.release.c_str());
 }
 
@@ -555,11 +573,12 @@ static void send_authen_request(void)
     g_authen_random = request.randomValue;
     pthread_mutex_unlock(&g_authen_lock);
 
+    CmdWriteLock lock;
     if (CCarLifeLib::getInstance()->cmdHuAuthenRequest(&request) < 0) {
-        log_line_error("failed to send head unit authentication request");
+        log_line_error("auth.request_send_failed");
         return;
     }
-    log_line("sent head unit authentication request (randomValue=%s)", request.randomValue.c_str());
+    log_line("auth.request_sent value=%s", request.randomValue.c_str());
 }
 
 static void cb_md_authen_response(S_AUTHEN_RESPONSE* response)
@@ -573,34 +592,33 @@ static void cb_md_authen_response(S_AUTHEN_RESPONSE* response)
     bool verified = !expected.empty() && length >= 0 && expected.compare(recovered) == 0;
 
     if (verified) {
-        log_line("phone authenticated: the response decrypts to the value that was sent (%d bytes)",
-                 length);
+        log_line("auth.response_verified bytes=%d", length);
     } else if (expected.empty()) {
-        log_line_warn("phone sent an authentication response without a request outstanding (%u bytes)",
+        log_line_warn("auth.response_unsolicited bytes=%u",
                       (unsigned int)response->encryptValue.size());
     } else if (length < 0) {
-        log_line_warn("phone authentication failed: the response is not a Base64 RSA-1024 signature "
-                      "with PKCS#1 padding (%u bytes)",
+        log_line_warn("auth.response_invalid bytes=%u reason=not_rsa1024_pkcs1",
                       (unsigned int)response->encryptValue.size());
     } else {
         /* The phone rewrites the version part of the value when it is asked for a version
          * above its own, so a mismatch here usually means kAuthenVersion is too high. */
-        log_line_warn("phone authentication failed: the response decrypts to \"%s\", not the \"%s\" "
-                      "that was sent",
-                      recovered, expected.c_str());
+        log_line_warn("auth.response_mismatch got=\"%s\" want=\"%s\"", recovered,
+                      expected.c_str());
     }
 
     S_HU_AUTHEN_RESULT result;
     result.authenResult = verified;
+    CmdWriteLock lock;
     if (CCarLifeLib::getInstance()->cmdHuAuthenResult(&result) < 0) {
-        log_line_error("failed to send head unit authentication result");
+        log_line_error("auth.result_send_failed");
     }
 }
 
 static void cb_md_authen_result(S_MD_AUTHEN_RESULT* result)
 {
     g_authen_result = result->authenResult ? 1 : 0;
-    log_line_debug("phone authentication result: %s", result->authenResult ? "authenticated" : "rejected");
+    log_line_debug("auth.result_received result=%s",
+                   result->authenResult ? "authenticated" : "rejected");
     send_frame(CH_CMD, EV_AUTHEN_RESULT, &g_authen_result, 1);
 }
 
@@ -641,11 +659,11 @@ static void cb_feature_config_request(void)
     }
     g_feature_config_list.cnt = (u32)count;
     g_feature_config_list.pFeatureConfig = &g_feature_config[0];
+    CmdWriteLock lock;
     CCarLifeLib::getInstance()->cmdFeatureConfigResponse(&g_feature_config_list);
 
     send_frame(CH_CMD, EV_FEATURE_CONFIG_REQUEST, NULL, 0);
-    log_line_debug("replied to phone feature config request (%d keys, audio over the dedicated "
-             "channel, no content encryption)",
+    log_line_debug("session.feature_config_replied keys=%d audio=dedicated_channel encryption=none",
              count);
 }
 
@@ -769,6 +787,230 @@ static void cb_vr_stop(void)
     send_frame(CH_VR, EV_AUDIO_STOP, NULL, 0);
 }
 
+/* ------------------------------------------------------ Vehicle data: position
+ *
+ * The phone asks which vehicle data modules this head unit can produce (guide 12):
+ * MSG_CMD_CAR_DATA_SUBSCRIBE carries a list, the head unit answers with ..._SUBSCRIBE_DONE
+ * carrying the module it supports, the coordinate format and the rate, and the phone then
+ * subscribes to one module at a time with ..._START. Only GPS is implemented here, so the
+ * reply has a single entry.
+ *
+ * The request is not a filter: the phone sends it with an empty list (cnt 0) and expects
+ * the head unit to report what it has, which is what the reference head unit does - it
+ * answers every ..._SUBSCRIBE with its whole list, built from the reporters it created.
+ *
+ * Of the twenty-five fields MSG_CMD_CAR_GPS defines, only the ones describing where this
+ * machine is can be filled: position, altitude, speed, heading, the accuracy of the fix and
+ * the time of the fix, all from CoreLocation (gps.mm). Everything else - signal strength,
+ * satellite counts, the DOPs - has no source here and is reported as zero, which is what the
+ * reference head unit does with the fields it cannot measure either. The message is not
+ * skipped for them: every field except timeStamp is required, so a body with any of them
+ * missing does not parse on the phone.
+ */
+static const u32 kCarDataGps = 0;
+
+/* Set by ..._START, cleared by ..._STOP, read by the reporting thread below. */
+static std::atomic<int> g_gps_reporting(0);
+
+/* One fix per second, the rate the guide gives for this message. The phone asks for a rate
+ * of its own in ..._START and it is not honoured: the fix comes from Wi-Fi positioning, so
+ * sampling it faster than the protocol's default would only repeat the same position. */
+static const int kGpsReportIntervalSeconds = 1;
+
+/* The library fills cnt entries of a fixed array of ten and leaves the rest as it found
+ * it, so only the first cnt entries of a list mean anything. Those ids as "0" or "0,1",
+ * "none" when there are none. */
+static void format_module_list(const S_VEHICLE_INFO_LIST* list, char* ids, size_t size)
+{
+    size_t offset = 0;
+    ids[0] = '\0';
+
+    unsigned i = 0;
+    for (const S_VEHICLE_INFO* info = list->pVehicleInfo;
+         info != NULL && i < (unsigned)list->cnt; info = info->pNext, ++i) {
+        int written = snprintf(ids + offset, size - offset, offset == 0 ? "%d" : ",%d",
+                               (int)info->moduleID);
+        if (written > 0 && (size_t)written < size - offset) {
+            offset += (size_t)written;
+        }
+    }
+    if (offset == 0) {
+        snprintf(ids, size, "none");
+    }
+}
+
+/* An empty list is read as naming every module. The phone asks for the module list with an
+ * empty ..._SUBSCRIBE and takes what the reply offers; an empty ..._START is the same
+ * question one step later, so it starts everything this head unit declared. */
+static bool vehicle_list_names(const S_VEHICLE_INFO_LIST* list, u32 module)
+{
+    if (list->cnt == 0) {
+        return true;
+    }
+    unsigned i = 0;
+    for (const S_VEHICLE_INFO* info = list->pVehicleInfo;
+         info != NULL && i < (unsigned)list->cnt; info = info->pNext, ++i) {
+        if (info->moduleID == module) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char* authorization_state(int value)
+{
+    if (value == 1) {
+        return "authorized";
+    }
+    if (value == -1) {
+        return "pending";
+    }
+    return "denied";
+}
+
+static void cb_car_data_subscribe(S_VEHICLE_INFO_LIST* list)
+{
+    /* Support is declared whether or not a fix is available yet. The phone sends this once
+     * per session, a second or two after the link starts, when the Location Services
+     * prompt may still be open; answering "no GPS" here would leave the session without
+     * position data even after the permission is granted. A position that is not there is
+     * reported in the message itself, as antennaState -1 (gps_send_thread), which is the
+     * guide's "GPS module unavailable". */
+    S_VEHICLE_INFO gps_info;
+    gps_info.moduleID = kCarDataGps;
+    gps_info.flag = 1; /* WGS84, and "supported" */
+    gps_info.frequency = (i32)kGpsReportIntervalSeconds;
+    gps_info.pNext = NULL;
+    S_VEHICLE_INFO_LIST reply;
+    reply.cnt = 1;
+    reply.pVehicleInfo = &gps_info;
+
+    {
+        CmdWriteLock lock;
+        if (CCarLifeLib::getInstance()->cmdCarDataSubscribeDone(&reply) < 0) {
+            log_line_error("vehicle.subscribe_reply_failed");
+            return;
+        }
+    }
+    char ids[48];
+    format_module_list(list, ids, sizeof(ids));
+    log_line("vehicle.subscribe_requested modules=%s reply=gps rate_hz=%d auth=%s", ids,
+             kGpsReportIntervalSeconds, authorization_state(gps_authorization()));
+}
+
+static void cb_car_data_subscribe_start(S_VEHICLE_INFO_LIST* list)
+{
+    char ids[48];
+    format_module_list(list, ids, sizeof(ids));
+    if (!vehicle_list_names(list, kCarDataGps)) {
+        log_line_warn("vehicle.gps_report_skipped modules=%s reason=not_gps", ids);
+        return;
+    }
+    g_gps_reporting.store(1);
+    log_line("vehicle.gps_report_started modules=%s rate_hz=%d", ids, kGpsReportIntervalSeconds);
+}
+
+static void cb_car_data_subscribe_stop(S_VEHICLE_INFO_LIST* list)
+{
+    if (!vehicle_list_names(list, kCarDataGps)) {
+        return;
+    }
+    char ids[48];
+    format_module_list(list, ids, sizeof(ids));
+    g_gps_reporting.store(0);
+    log_line("vehicle.gps_report_stopped modules=%s", ids);
+}
+
+/* Reports the latest fix once per interval while the phone is subscribed. Without a fix -
+ * because the location service is denied, still unanswered, or simply has none yet - the
+ * message is still sent, with antennaState -1, the guide's "GPS module unavailable": the
+ * phone then sees a module that exists but has nothing to report, instead of a subscribed
+ * module that never sends anything. Logged once per transition, not once per second. */
+static void* gps_send_thread(void*)
+{
+    CCarLifeLib* lib = CCarLifeLib::getInstance();
+    int last_authorization = 2; /* no such value, so the first pass always reports */
+    bool no_fix_logged = false;
+    bool fix_logged = false;
+    bool failure_logged = false;
+
+    for (;;) {
+        sleep(kGpsReportIntervalSeconds);
+
+        const int authorization = gps_authorization();
+        if (authorization != last_authorization) {
+            if (authorization == 1) {
+                log_line("gps.authorization state=authorized");
+            } else {
+                log_line_warn("gps.authorization state=%s hint=\"%s\"",
+                              authorization_state(authorization),
+                              authorization == -1
+                                  ? "the prompt for CarLifeLink.app is open; a granted "
+                                    "permission is kept across rebuilds"
+                                  : "enable Location Services for CarLifeLink.app");
+            }
+            last_authorization = authorization;
+        }
+
+        if (g_gps_reporting.load() == 0) {
+            no_fix_logged = false;
+            fix_logged = false;
+            continue;
+        }
+
+        S_CAR_GPS gps;
+        memset(&gps, 0, sizeof(gps));
+        gps_fix fix;
+        if (gps_latest(&fix)) {
+            gps.antennaState = 1;
+            gps.latitude = (u32)fix.latitude;
+            gps.longitude = (u32)fix.longitude;
+            gps.height = (u32)fix.height;
+            gps.speed = fix.speed;
+            gps.heading = fix.heading;
+            gps.horPosError = fix.hor_pos_error;
+            gps.vertPosError = fix.vert_pos_error;
+            gps.timeStamp = fix.timestamp;
+            gps.year = fix.year;
+            gps.month = fix.month;
+            gps.day = fix.day;
+            gps.hrs = fix.hour;
+            gps.min = fix.minute;
+            gps.sec = fix.second;
+            if (!fix_logged) {
+                log_line("gps.fix lat=%.6f lon=%.6f alt_m=%.0f acc_m=%u "
+                         "utc=%04u-%02u-%02uT%02u:%02u:%02uZ",
+                         fix.latitude / 1000000.0, fix.longitude / 1000000.0,
+                         fix.height / 10.0, fix.hor_pos_error, (unsigned)fix.year,
+                         (unsigned)fix.month, (unsigned)fix.day, (unsigned)fix.hour,
+                         (unsigned)fix.minute, (unsigned)fix.second);
+                fix_logged = true;
+            }
+            no_fix_logged = false;
+        } else {
+            gps.antennaState = 0xFFFFFFFFu; /* -1: no fix */
+            if (!no_fix_logged) {
+                log_line_warn("gps.fix_missing antenna=unavailable reason=%s",
+                              authorization == 1 ? "waiting_for_first_fix"
+                                                 : authorization_state(authorization));
+                no_fix_logged = true;
+            }
+            fix_logged = false;
+        }
+
+        CmdWriteLock lock;
+        if (lib->cmdCarGPS(&gps) < 0) {
+            if (!failure_logged) {
+                log_line_error("gps.send_failed");
+                failure_logged = true;
+            }
+        } else {
+            failure_logged = false;
+        }
+    }
+    return NULL;
+}
+
 /* ------------------------------------------------- Channel receive threads */
 
 static void* cmd_receive_thread(void*)
@@ -801,10 +1043,13 @@ static void* cmd_receive_thread(void*)
     lib->cmdRegisterMdExit(cb_md_exit);
     lib->cmdRegisterMdAuthenResponse(cb_md_authen_response);
     lib->cmdRegisterMdAuthenResult(cb_md_authen_result);
+    lib->cmdRegisterCarDataSubscribe(cb_car_data_subscribe);
+    lib->cmdRegisterCarDataSubscribeStart(cb_car_data_subscribe_start);
+    lib->cmdRegisterCarDataSubscribeStop(cb_car_data_subscribe_stop);
 
     while (lib->cmdReceiveOperation() != -1) {
     }
-    log_line("command channel receiver stopped");
+    log_line("channel.stopped ch=cmd");
     return NULL;
 }
 
@@ -911,8 +1156,12 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_HU_PROTOCOL_VERSION version;
             version.majorVersion = get_be32(body);
             version.minorVersion = get_be32(body + 4);
-            lib->cmdHUProtoclVersion(&version);
-            log_line("sending protocol version %u.%u", version.majorVersion, version.minorVersion);
+            {
+                CmdWriteLock lock;
+                lib->cmdHUProtoclVersion(&version);
+            }
+            log_line("session.protocol_version_sent major=%u minor=%u", version.majorVersion,
+                     version.minorVersion);
 
             /* Identity first: the phone authenticates the head unit from it and only
              * then asks for the feature configuration */
@@ -928,47 +1177,67 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             param.width = get_be32(body);
             param.height = get_be32(body + 4);
             param.frameRate = get_be32(body + 8);
-            lib->cmdVideoEncoderInit(&param);
-            log_line_debug("requesting video encoding %ux%u@%u", param.width, param.height, param.frameRate);
+            {
+                CmdWriteLock lock;
+                lib->cmdVideoEncoderInit(&param);
+            }
+            log_line_debug("video.encoder_init_requested width=%u height=%u fps=%u", param.width,
+                           param.height, param.frameRate);
             break;
         }
-        case CMD_VIDEO_ENCODER_START:
+        case CMD_VIDEO_ENCODER_START: {
+            CmdWriteLock lock;
             lib->cmdVideoEncoderStart();
-            log_line_debug("starting video encoder");
+            log_line_debug("video.encoder_started");
             break;
-        case CMD_VIDEO_ENCODER_PAUSE:
+        }
+        case CMD_VIDEO_ENCODER_PAUSE: {
+            CmdWriteLock lock;
             lib->cmdVideoEncoderPause();
-            log_line("pausing video encoder");
+            log_line("video.encoder_paused");
             break;
-        case CMD_VIDEO_ENCODER_RESET:
+        }
+        case CMD_VIDEO_ENCODER_RESET: {
+            CmdWriteLock lock;
             lib->cmdVideoEncoderReset();
-            log_line("resetting video encoder");
+            log_line("video.encoder_reset");
             break;
-        case CMD_GO_TO_FOREGROUND:
+        }
+        case CMD_GO_TO_FOREGROUND: {
+            CmdWriteLock lock;
             lib->cmdGoToForeground();
-            log_line("requesting phone to move to foreground");
+            log_line("phone.foreground_requested");
             break;
-        case CMD_LAUNCH_MODE_NORMAL:
+        }
+        case CMD_LAUNCH_MODE_NORMAL: {
+            CmdWriteLock lock;
             lib->cmdLaunchModeNormal();
             break;
-        case CMD_LAUNCH_MODE_PHONE:
+        }
+        case CMD_LAUNCH_MODE_PHONE: {
+            CmdWriteLock lock;
             lib->cmdLaunchModePhone();
             break;
-        case CMD_LAUNCH_MODE_MAP:
+        }
+        case CMD_LAUNCH_MODE_MAP: {
+            CmdWriteLock lock;
             lib->cmdLaunchModeMap();
             break;
-        case CMD_LAUNCH_MODE_MUSIC:
+        }
+        case CMD_LAUNCH_MODE_MUSIC: {
+            CmdWriteLock lock;
             lib->cmdLaunchModeMusic();
             break;
+        }
         case CMD_AUTHEN_REQUEST:
             if (g_authen_result == 1) {
-                log_line("head unit already authenticated, skipping authentication request");
+                log_line("auth.request_skipped reason=already_authenticated");
                 break;
             }
             send_authen_request();
             break;
         default:
-            log_line_warn("ignoring a message with unknown command channel tag 0x%02X", (unsigned)tag);
+            log_line_warn("channel.unknown_tag ch=cmd tag=0x%02X action=ignore", (unsigned)tag);
             break;
         }
         return;
@@ -1379,7 +1648,14 @@ int main(int argc, char** argv)
     start_thread(vr_receive_thread, "voice channel");
     start_thread(backend_loop, "backend");
 
-    log_line("ready, waiting for the Go backend to connect");
+    /* The vehicle data channel reports a position, which has to be sampled before the
+     * phone asks whether this head unit has one: start the sampler first. */
+    if (gps_start() != 0) {
+        log_line_warn("gps.sampler_start_failed");
+    }
+    start_thread(gps_send_thread, "vehicle data");
+
+    log_line("process.ready backend=waiting");
 
     /* The USB receive loop owns the main thread: it returns when the phone goes away, and
      * the process ends there so that carlifed rebuilds the link. */
