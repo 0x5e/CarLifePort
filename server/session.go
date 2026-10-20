@@ -510,6 +510,20 @@ func (s *session) requestVideo() {
 	}
 }
 
+// restartVideoEncoder asks the phone to rebuild its encoder. It is the recovery for a
+// session this process joined while it was already streaming: the phone is past the
+// handshake, so it ignores the protocol version sent on start and keeps encoding, which
+// means the parameter sets that opened the stream are gone for good. A reset followed by
+// an init is the sequence it does act on, and it also yields a keyframe the browser can
+// start a decoder at. Same pair as a display change.
+func (s *session) restartVideoEncoder() {
+	if err := s.link.send(chCmd, cmdVideoEncoderReset, nil); err != nil {
+		errorf(moduleSession, "failed to reset the video encoder: %v; video stays undecodable", err)
+		return
+	}
+	s.requestVideo()
+}
+
 /* ---------------------------------------------------------------------- video */
 
 func (s *session) onVideoData(data []byte) {
@@ -564,7 +578,10 @@ func (s *session) onVideoData(data []byte) {
 
 	if first {
 		if config == nil {
-			warnf(moduleSession, "video frames have started, waiting for SPS/PPS")
+			// Frames without parameter sets mean the stream was opened before this process
+			// started, so the SPS/PPS that opened it were never seen here.
+			warnf(moduleSession, "video frames arrived without SPS/PPS; the stream predates this process, restarting the phone encoder")
+			s.restartVideoEncoder()
 		}
 		infof(moduleSession, "video stream started")
 		s.broadcastState()
