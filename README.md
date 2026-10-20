@@ -125,9 +125,10 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 | `CL_WEB_ADDR` | `0.0.0.0:8080` | HTTPS 监听地址（默认对局域网可访问） |
 | `CL_CHANNEL` | `20062100` | 上报给手机的渠道号（见「车机鉴权」） |
 | `CL_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
-| `CL_LINK` | `<carlifed 目录>/CarLifeLink.app/Contents/MacOS/carlife-link` | 要拉起的链接进程可执行文件 |
+| `CL_LINK_APP` | `CarLifeLink.app` | 链接进程所在的 app bundle（可执行文件固定为 `Contents/MacOS/carlife-link`） |
 
-`CL_LINK` 按给定值使用，相对路径相对于当前工作目录。视频模式与监听地址以外的行为
+`CL_LINK_APP` 按给定值使用，相对路径相对于 `carlifed` 自身所在目录（不是当前工作目录），因此默认值
+在哪个目录下启动都指向 `dist/CarLifeLink.app`。视频模式与监听地址以外的行为
 不可配置：服务总是使用自签名证书的 HTTPS，总是拉起并重启链接进程，链接进程监听的 Unix socket
 固定为 `/tmp/carlife-link.sock`；访问令牌固定为 `0`，车机名与车机 id 都取本机（hostname 与 host uuid）。
 

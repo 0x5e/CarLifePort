@@ -171,17 +171,26 @@ func executableDir() string {
 }
 
 // loadConfig reads every knob, defaulting each path to a file next to this binary: the
-// top-level Makefile puts the link program there. The browser client is not a path at all:
+// top-level Makefile puts the link bundle there. The browser client is not a path at all:
 // it is compiled into this binary.
 func loadConfig() config {
 	dir := executableDir()
+	// The knob names the app bundle, not the executable inside it: the bundle is what the
+	// build produces and what CoreLocation authorizes, so its layout is this process's
+	// business rather than a second thing to configure. A relative value is taken from the
+	// directory this binary is in, which makes the default independent of the caller's
+	// working directory.
+	linkApp := envString("CL_LINK_APP", "CarLifeLink.app")
+	if !filepath.IsAbs(linkApp) {
+		linkApp = filepath.Join(dir, linkApp)
+	}
 	// The video mode is one knob: the phone is told width, height and frame rate in a single
 	// message, so the three are only meaningful together. The phone may cap the frame rate
 	// and reports the rate it accepted in the log, so lower this if 60 is not accepted. The
 	// web client's display panel changes it at runtime.
 	width, height, fps := parseVideoMode(envString("CL_VIDEO_MODE", "1280x720@60"))
 	return config{
-		linkPath: envString("CL_LINK", filepath.Join(dir, "CarLifeLink.app", "Contents", "MacOS", "carlife-link")),
+		linkPath: filepath.Join(linkApp, "Contents", "MacOS", "carlife-link"),
 		// The default is reachable from other machines on the LAN; one viewer URL is
 		// printed per interface. 127.0.0.1:8080 keeps the page local.
 		addr: envString("CL_WEB_ADDR", "0.0.0.0:8080"),
@@ -212,8 +221,8 @@ func loadConfig() config {
 
 const usageText = `usage: carlifed
 
-Configuration comes from CL_-prefixed environment variables; there are no flags. CL_LINK
-defaults to a file next to this binary, which is where the Makefile puts it.
+Configuration comes from CL_-prefixed environment variables; there are no flags. CL_LINK_APP
+defaults to a bundle next to this binary, which is where the Makefile puts it.
 
   CL_VIDEO_MODE    1280x720@60             video mode requested from the phone, as
                                            <width>x<height>@<fps>
@@ -222,10 +231,11 @@ defaults to a file next to this binary, which is where the Makefile puts it.
   CL_LOG_LEVEL     info                    debug, info, warn or error; debug adds the
                                            per-frame telemetry and the link's copy of
                                            the events this process already reports
-  CL_LINK          <binary dir>/CarLifeLink.app/Contents/MacOS/carlife-link
-                                           the link to start
+  CL_LINK_APP      CarLifeLink.app         the app bundle holding the link executable,
+                                           Contents/MacOS/carlife-link
 
-CL_LINK is used as given, relative paths included.
+CL_LINK_APP is used as given except that a relative path is taken from the directory of
+this binary.
 `
 
 func main() {
