@@ -510,20 +510,6 @@ func (s *session) requestVideo() {
 	}
 }
 
-// restartVideoEncoder asks the phone to rebuild its encoder. It is the recovery for a
-// session this process joined while it was already streaming: the phone is past the
-// handshake, so it ignores the protocol version sent on start and keeps encoding, which
-// means the parameter sets that opened the stream are gone for good. A reset followed by
-// an init is the sequence it does act on, and it also yields a keyframe the browser can
-// start a decoder at. Same pair as a display change.
-func (s *session) restartVideoEncoder() {
-	if err := s.link.send(chCmd, cmdVideoEncoderReset, nil); err != nil {
-		errorf(moduleSession, "failed to reset the video encoder: %v; video stays undecodable", err)
-		return
-	}
-	s.requestVideo()
-}
-
 /* ---------------------------------------------------------------------- video */
 
 func (s *session) onVideoData(data []byte) {
@@ -578,10 +564,12 @@ func (s *session) onVideoData(data []byte) {
 
 	if first {
 		if config == nil {
-			// Frames without parameter sets mean the stream was opened before this process
-			// started, so the SPS/PPS that opened it were never seen here.
-			warnf(moduleSession, "video frames arrived without SPS/PPS; the stream predates this process, restarting the phone encoder")
-			s.restartVideoEncoder()
+			// A frame without parameter sets belongs to a stream that was already running, so
+			// the SPS/PPS that opened it went to a process that is gone. Reaching this point
+			// means carlife-link could not drop that session at the USB level: the phone
+			// answers a repeated encoder init from the dimensions it already has and never
+			// re-sends the parameter sets, so there is nothing left to ask it for.
+			warnf(moduleSession, "video frames arrived without SPS/PPS: the phone is still on the session that opened them and cannot re-send its parameter sets, so the picture stays black until it starts a new one (replug)")
 		}
 		infof(moduleSession, "video stream started")
 		s.broadcastState()

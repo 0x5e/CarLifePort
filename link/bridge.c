@@ -673,8 +673,9 @@ static void on_signal(int sig)
     aoa_stop = 1;
 }
 
-/* Acquire a claimed accessory device: pick a device, send 51/52/53 unless it is already in
- * accessory mode, wait for the accessory re-enumeration, then claim the bulk interface.
+/* Acquire a claimed accessory device: pick a device, drop a session that an earlier process
+ * opened, send 51/52/53 unless it is already in accessory mode, wait for the accessory
+ * re-enumeration, then claim the bulk interface.
  *
  * Every step is retried rather than treated as fatal, because the phone may still be on its
  * way in: it can be plugged in after this process started, or it can be held by another
@@ -689,6 +690,7 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
     int no_device_logged = 0;
     int not_ready_logged = 0;
     int device_seen = 0;
+    int session_dropped = 0;
 
     for (;;) {
         struct aoa_device dev;
@@ -714,10 +716,24 @@ static int acquire_device(int vid, int pid, struct aoa_device *out)
                 is_accessory ? "  [already in accessory mode]" : "  [normal mode]");
 
         if (is_accessory) {
-            aoa_log("  already in accessory mode, skipping 51/52/53");
-            aoa_log("  note: the phone keeps an accessory session across a replug, so the CarLife app");
-            aoa_log("  may still be attached to the previous one. If no traffic appears, clear the mode");
-            aoa_log("  (adb shell svc usb setFunctions) and replug.");
+            if (!session_dropped) {
+                /* A session found in accessory mode was opened by a process that is gone, and
+                 * it keeps what this one needs: the parameter sets that started the stream are
+                 * sent once per encoder session, and the phone answers a repeated encoder init
+                 * with the dimensions it already has, so it never re-sends them. The only state
+                 * change it does rebuild on is the connection dropping. */
+                session_dropped = 1;
+                aoa_log("  session opened by an earlier process, resetting the port so the phone starts a new one");
+                aoa_reset_port(&dev);
+                /* The phone is away for a moment by design, so the "nothing plugged in"
+                 * warning would be wrong here. */
+                no_device_logged = 1;
+                sleep(1);
+                attempt++;
+                continue;
+            }
+            aoa_log_warn("  the phone kept its accessory session across a port reset, carrying on with it");
+            aoa_log_warn("  the picture stays undecodable until the phone starts a new session: replug it");
         } else {
             if (aoa_handshake(&dev, 1) != 0) {
                 aoa_close(&dev);

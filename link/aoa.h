@@ -81,6 +81,12 @@ int aoa_claim_accessory(struct aoa_device *d);
 /* Release the interface and close the device */
 void aoa_close(struct aoa_device *d);
 
+/* Drop the accessory session by resetting the port. The phone rebuilds its video encoder
+ * only when the connection drops: a repeated encoder init is answered from the dimensions it
+ * already has and leaves the running stream untouched, so a session found in accessory mode
+ * cannot be adopted. Closing the handle happens here either way; the caller enumerates again. */
+void aoa_reset_port(struct aoa_device *d);
+
 /* Send one full CarLife message: prepend the 8B AOA head, call bulk transfer in 16KB chunks.
  * The caller is responsible for serialization (never call concurrently on the same device).
  * Returns 0 on success, otherwise a negative libusb error code. */

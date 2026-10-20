@@ -570,6 +570,20 @@ void aoa_close(struct aoa_device *d)
     d->handle = NULL;
 }
 
+void aoa_reset_port(struct aoa_device *d)
+{
+    int r = libusb_reset_device(d->handle);
+
+    if (r == 0) {
+        aoa_log("  port reset accepted, the phone will re-enumerate");
+    } else if (r == LIBUSB_ERROR_NOT_FOUND) {
+        aoa_log("  the phone left the bus during the reset");
+    } else {
+        aoa_log_warn("  port reset failed: %s %s", libusb_error_name(r), error_hint(r));
+    }
+    aoa_close(d);
+}
+
 /* ------------------------------------------------------------------ send/receive */
 
 static void put_be32(unsigned char *p, unsigned int v)
