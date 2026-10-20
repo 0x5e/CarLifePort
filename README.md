@@ -5,8 +5,8 @@ CarLife 车机端（web 版）。服务端运行车机侧协议栈，浏览器�
 分层参考 [playport](https://github.com/youcci/playport)：车机协议在服务端，浏览器只负责解码显示。
 CarLife 协议栈使用百度的开源车机库 [CarLifeVehicleLib](./vendor/carlife)（Apache-2.0）。
 
-浏览器端直接使用 playport 的前端（`vendor/playport/web`，不做任何修改），本项目只实现它所需的
-后端接口，因此仓库中没有自己的 `web/` 目录。
+浏览器端直接使用 playport 的前端（`vendor/playport/web`，只替换界面文案，见「构建」），本项目只实现
+它所需的后端接口，因此仓库中没有自己的 `web/` 目录。
 
 ## 架构
 
@@ -21,7 +21,7 @@ CarLife 协议栈使用百度的开源车机库 [CarLifeVehicleLib](./vendor/car
 |---|---|---|
 | `link` | C / C++ | USB 传输（AOA 握手、USB 帧与六条本地 TCP 通道互转）与 CarLife 车机协议栈（链接 `libcarlifevehicle`） |
 | `server` | Go | 会话状态机、H.264 拆包、WebSocket 与 HTTP 接口（对齐 playport 服务端） |
-| `vendor/playport/web` | TypeScript | WebCodecs 解码、Web Audio 播放、输入上行（原样使用，不修改） |
+| `vendor/playport/web` | TypeScript | WebCodecs 解码、Web Audio 播放、输入上行（只替换文案，不修改逻辑） |
 
 `carlife-link` 是一个进程，内部两个子系统各占一半：`bridge`（USB 传输，`link/aoa.c` 与
 `link/bridge.c`）与 `stack`（协议栈，`link/main.cpp`）。两者之间不是进程边界，而是六个本地
@@ -59,7 +59,7 @@ make clean   # 删除 dist/、.build/ 与 server/web/
 | `make sdk` | 原生库：protobuf 2.5.0 + CarLife 协议栈 | `dist/CarLifeLink.app/Contents/Frameworks/libcarlifevehicle.dylib` |
 | `make link` | 链接进程（USB 传输 + 车机协议栈） | `dist/CarLifeLink.app` |
 | `make server` | Go 后端（含编译进去的前端） | `dist/carlifed` |
-| `make web` | 前端（playport 原样构建，暂存到 `server/web` 供嵌入） | — |
+| `make web` | 前端（playport + 文案补丁，暂存到 `server/web` 供嵌入） | — |
 | `make clean` | 删除 `dist/`、`.build/` 与 `server/web/` | — |
 
 首次全量构建可以加 `-j`（`make -j8 all`）并行编译原生库的 69 个源文件。
@@ -67,6 +67,11 @@ make clean   # 删除 dist/、.build/ 与 server/web/
 前端不是运行时目录：`make web` 把 `vendor/playport/web` 的构建结果暂存到 `server/web`，
 由 `server/webassets.go` 的 `go:embed` 编译进 `carlifed`，运行时只从内存提供，不读磁盘。
 `server/web` 是生成物、不进版本库，仓库里仍只有 vendor 那一份前端。
+
+它写的是 CarPlay 无线投屏，界面上的品牌、按钮与连接指引都不适用，因此改动集中在
+`patches/playport-web.patch`：只替换字符串（品牌、CarPlay/CarLife、iPhone/Android、Siri 语音助手、
+连接指引里的蓝牙配对改成 USB 连接），不碰标记与逻辑。`make web` 构建前把子模块还原再应用，戳是
+`.build/.playport-web-patched`，与原生库那份补丁同一套做法。
 
 `carlife-link` 放在 `dist/CarLifeLink.app` 里，`carlifed` 按自身所在目录拼出这个路径（定位授权要求，
 见「车载数据」）。原生库也在这个 bundle 的 `Contents/Frameworks` 下：bundle 之外的代码不在它的签名范围

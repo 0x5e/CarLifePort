@@ -145,10 +145,16 @@ link: sdk
 # ------------------------------------------------------------------- backend + frontend
 # Go and vite track their own inputs, so these two are phony on purpose.
 #
-# The frontend is not a run-time directory. make web builds it unmodified from
-# vendor/playport/web and stages the result in server/web, which is what the //go:embed
-# directive in server/webassets.go compiles into carlifed. That staging directory is
-# generated (and ignored by git), so the vendored copy stays the only one in the tree.
+# The frontend is not a run-time directory. make web builds vendor/playport/web and stages
+# the result in server/web, which is what the //go:embed directive in server/webassets.go
+# compiles into carlifed. That staging directory is generated (and ignored by git), so the
+# vendored copy stays the only one in the tree.
+#
+# The viewer is built with the copy changes in patches/playport-web.patch. It was written
+# for CarPlay over a wireless connection, so its labels, its connection guide and its brand
+# name describe a different product; the patch replaces strings only, no markup or logic.
+# Like the library patch it is applied to the submodule in place, behind a stamp, after a
+# checkout that makes the step repeatable.
 server: web
 	@printf '\n\033[1;36m==> backend (browser client embedded)\033[0m\n'
 	@mkdir -p $(DIST)
@@ -156,15 +162,23 @@ server: web
 
 WEB_DIR   := $(ROOT)/vendor/playport/web
 WEB_STAGE := $(ROOT)/server/web
+WEB_PATCH := $(ROOT)/patches/playport-web.patch
+WEB_STAMP := $(BUILD)/.playport-web-patched
 
-web:
-	@printf '\n\033[1;36m==> frontend (vendor/playport, built unmodified)\033[0m\n'
+web: $(WEB_STAMP)
+	@printf '\n\033[1;36m==> frontend (vendor/playport + patches/)\033[0m\n'
 	@if [ ! -d $(WEB_DIR)/node_modules ]; then \
 	  echo "== first build, installing web dependencies"; \
 	  cd $(WEB_DIR) && npm install --no-package-lock; \
 	fi
 	@cd $(WEB_DIR) && npm run build
 	@rm -rf $(WEB_STAGE) && cp -R $(WEB_DIR)/dist $(WEB_STAGE)
+
+$(WEB_STAMP): $(WEB_PATCH)
+	@printf '\n\033[1;36m==> vendored viewer (apply patches/)\033[0m\n'
+	@git -C $(ROOT)/vendor/playport checkout -- web
+	@cd $(ROOT)/vendor/playport && patch -p1 --batch < $(WEB_PATCH)
+	@touch $@
 
 # ------------------------------------------------------------------------------ clean
 # dist/, .build/ and the staged frontend go away entirely. vendor/playport/web/node_modules
