@@ -57,7 +57,7 @@ make clean   # 删除 dist/、.build/ 与 server/web/
 |---|---|---|
 | `make all` | 下列四项，一次运行内完成 | — |
 | `make sdk` | 原生库：protobuf 2.5.0 + CarLife 协议栈 | `dist/libcarlifevehicle.dylib` |
-| `make link` | 链接进程（USB 传输 + 车机协议栈） | `dist/carlife-link` |
+| `make link` | 链接进程（USB 传输 + 车机协议栈） | `dist/CarLifeLink.app` |
 | `make server` | Go 后端（含编译进去的前端） | `dist/carlifed` |
 | `make web` | 前端（playport 原样构建，暂存到 `server/web` 供嵌入） | — |
 | `make clean` | 删除 `dist/`、`.build/` 与 `server/web/` | — |
@@ -68,8 +68,9 @@ make clean   # 删除 dist/、.build/ 与 server/web/
 由 `server/webassets.go` 的 `go:embed` 编译进 `carlifed`，运行时只从内存提供，不读磁盘。
 `server/web` 是生成物、不进版本库，仓库里仍只有 vendor 那一份前端。
 
-`carlife-link` 需要和 `carlifed` 同目录：`carlifed` 按自身所在目录查找链接进程。原生库使用
-`@rpath` 安装名，链接进程使用 `@loader_path` rpath 定位同级目录中的 dylib，二进制中不包含构建路径。
+`carlife-link` 放在 `dist/CarLifeLink.app` 里，`carlifed` 按自身所在目录拼出这个路径（定位授权要求，
+见「车载数据」）。原生库使用 `@rpath` 安装名，链接进程用 `@loader_path/../../..` 的 rpath 定位
+`dist/` 中的 dylib，二进制中不包含构建路径。
 
 原生库的 69 个 C++ 源文件各自编译成 `.build/obj` 下的目标文件，按源文件与头文件的时间戳增量重建
 （编译时用 `-MMD` 记录每个目标文件包含了哪些头文件）。protobuf 安装进 `.build/pb`，只在库文件缺失
@@ -123,7 +124,7 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 | `CL_WEB_ADDR` | `0.0.0.0:8080` | HTTPS 监听地址（默认对局域网可访问） |
 | `CL_CHANNEL` | `20062100` | 上报给手机的渠道号（见「车机鉴权」） |
 | `CL_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
-| `CL_LINK` | `<carlifed 目录>/carlife-link` | 要拉起的链接进程可执行文件 |
+| `CL_LINK` | `<carlifed 目录>/CarLifeLink.app/Contents/MacOS/carlife-link` | 要拉起的链接进程可执行文件 |
 
 `CL_LINK` 按给定值使用，相对路径相对于当前工作目录。视频模式与监听地址以外的行为
 不可配置：服务总是使用自签名证书的 HTTPS，总是拉起并重启链接进程，链接进程监听的 Unix socket
@@ -149,16 +150,20 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 
 ### 日志
 
-两个进程的输出汇入同一终端，格式为 `时间 级别 [模块] 内容`：
+两个进程的输出汇入同一终端，格式为 `时间 级别 [模块] 事件 字段=值…`：
 
 ```
-17:08:35.984 INFO  [carlifed]   service started
-17:08:36.415 INFO  [bridge]     waiting for a phone
-17:08:36.422 INFO  [stack]      listening on /tmp/carlife-link.sock
-17:08:37.987 INFO  [link]       connected to carlife-link: /tmp/carlife-link.sock
-17:08:41.203 INFO  [session]    phone ready, video 1280x720@60, starting encoder
-17:08:41.208 DEBUG [session]    video: 59.8 fps received (299 frames, 3612.4 KB/s) in the last 5s, requested 60 fps
+17:08:35.984 INFO  [carlifed]   process.started
+17:08:36.415 INFO  [bridge]     usb.acquire step=wait_for_phone
+17:08:36.422 INFO  [stack]      link.listening path=/tmp/carlife-link.sock
+17:08:37.987 INFO  [link]       link.connected path=/tmp/carlife-link.sock
+17:08:41.203 INFO  [session]    video.ready width=1280 height=720 fps=60 action=start_encoder
+17:08:41.208 DEBUG [session]    video.stats fps=59.8 frames=299 rate_kb_s=3612.4 window=5s requested_fps=60
 ```
+
+正文是「事件 字段=值…」。事件是 `<范围>.<对象>_<结果>` 形式的稳定名字（`session.version_confirmed`、
+`video.encoder_start_failed`），搜索按它过滤，例如 `grep bridge.frame_rejected`、`grep 'result=failed'`；
+字段里带单位后缀（`retry_ms`、`rate_hz`、`acc_m`），值是裸数字。句子、`failed to …` 这类叙述不写。
 
 输出到终端时带颜色：时间为灰色，级别按严重程度着色（`DEBUG` 白、`INFO` 绿、`WARN` 黄、`ERROR` 红），
 模块与内容保持终端默认颜色。stderr 不是终端时（重定向到文件或管道）不上色，避免转义序列混入日志文件。
@@ -192,9 +197,8 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 在转发时丢弃。因此这些内容在 `CL_LOG_LEVEL=debug` 下可见，而链接进程单独运行时也总能看到。
 
 判据是「这件事之后还能不能继续跑」：会重试的一步、被丢弃的帧或连接、不认识的事件标为 `warn`；
-操作被放弃、或者链路要重建、进程要退出时标为 `error`。所以一行文本里出现 `failed` 并不等于
-`error`——设备就绪前反复重试的 `51/52/53 failed` 是 `warn`，而 `USB receive loop ended (error)`
-是 `error`。
+操作被放弃、或者链路要重建、进程要退出时标为 `error`。所以事件名里带 `_failed` 并不等于 `error`——
+设备就绪前反复重试的 `aoa.get_protocol result=failed` 是 `warn`，而 `aoa.read_failed` 是 `error`。
 
 标记的还有两类。一类是重复：协议栈每收到一个事件都在本地记一行，同时把事件当帧转给 `carlifed`，
 后者再记一行同义的日志，于是默认级别下同一件事出现两次。凡属这种情况，协议栈那行一律标为
@@ -245,10 +249,11 @@ socket，进程退出后 socket 仍被持有，`carlifed` 会连接到一个无�
 ### 单独运行某个组件
 
 ```sh
-dist/carlife-link --list      # 只枚举 USB 设备，不操作任何设备
-dist/carlife-link --socket /tmp/carlife-link.sock --channel 20062100 --cuid "$(uuidgen)"
+LINK=dist/CarLifeLink.app/Contents/MacOS/carlife-link
+$LINK --list                  # 只枚举 USB 设备，不操作任何设备
+$LINK --socket /tmp/carlife-link.sock --channel 20062100 --cuid "$(uuidgen)"
                               # 完整的链接进程；三个参数必填，cuid 手工调试时随便给一个唯一值
-dist/carlife-link --socket /tmp/carlife-link.sock --channel 20062100 --cuid "$(uuidgen)" -v
+$LINK --socket /tmp/carlife-link.sock --channel 20062100 --cuid "$(uuidgen)" -v
                               # 同上，并保留协议栈内部日志
 ```
 
@@ -307,7 +312,7 @@ unit`。身份上报在协议版本匹配时立即发出（真机抓包顺序如
 `MSG_CMD_STATISTIC_INFO` 中的渠道号判断车机是否合法，校验通过后才回 `MSG_CMD_MD_AUTHEN_RESULT`
 并启动车厂相关的定制服务；而手机的 `MSG_CMD_MD_FEATURE_CONFIG_REQUEST(0x00010051)` 只在
 「双方握手认证通过后」才发送。真机已验证这条链：渠道号合法后日志出现
-`replied to phone feature config request`，音频传输方式随之协商完成，音频不再零帧。
+`session.feature_config_replied`，音频传输方式随之协商完成，音频不再零帧。
 
 CarLife Android app 侧的校验规则（逆向所得，`CARLIFE_AUTH.md` 2.2 节）为：去空白后非空、匹配
 `2(\d){7}`（`2` 加恰好 7 位数字），且不等于后装市场渠道 `20000000` 与预装市场渠道 `20000001`，
@@ -320,6 +325,37 @@ CarLife Android app 侧的校验规则（逆向所得，`CARLIFE_AUTH.md` 2.2 �
 Linux 的 `/etc/machine-id`），不提供配置项。
 
 该上报必须发送，且渠道号必须合法：它是手机上功能定制链的触发条件，缺失或不合法会让音频通道零帧。
+
+### 车载数据（GPS）
+
+指南第 12 章里车机按手机的订阅上报车身数据。这里只实现 GPS：手机发
+`MSG_CMD_CAR_DATA_SUBSCRIBE(0x00010031)`，车机回 `..._SUBSCRIBE_DONE(0x00018032)`（支持标志与频率），
+手机再发 `..._START(0x00010033)`，此后每秒一条 `MSG_CMD_CAR_GPS(0x00018010)`；`..._STOP` 停止。
+实现见 `link/main.cpp` 的 `cb_car_data_subscribe*` 与 `gps_send_thread`。
+
+两点与直觉不同：SUBSCRIBE 的包体是**空的**（手机用 `cnt=0` 问「你能给什么」），所以应答回的是本机
+支持的全部模块，不按请求过滤；手机只在车机协议版本 `>2` 时才接受这条应答（`CarDataSubscribeManager`
+对 2 及以下直接丢弃），因此上报的协议版本是 `3.0` 而不是 `1.0`。
+
+库要改三处，都在 `patches/carlife-vehicle-lib.patch` 里（`make sdk` 编译前把子模块还原再应用，
+`vendor/carlife` 因此始终停在上游 commit）：`SUBSCRIBE_DONE` 常量归位到 `0x00018032`（上游写成
+手机方向）、空包体放行 `CAR_DATA_SUBSCRIBE`（上游把所有空包体丢弃，请求到不了回调）、列表 `cnt`
+为 0 时按 repeated 字段长度兜底（手机可以不填这个字段，条目会整批被跳过）。
+
+位置来自 CoreLocation（`link/gps.mm`）：Mac 没有 GNSS，靠 Wi-Fi 定位，精度几十米到几百米。报文 25 个
+字段里能填的是位置、海拔、速度、航向、定位精度，以及这次定位的日期时间（UTC，与 `timeStamp` 同一时刻）；
+其余（信号强度、卫星数、DOP）填 0——这些字段都是 required，省掉整条报文在手机上就解析不出来。频率固定
+1 Hz，手机在 `..._START` 里请求的频率不用。
+
+授权属于系统隐私设置（定位服务）。**链接进程必须放在 `.app` 里**：CoreLocation 对裸可执行文件会
+立即拒绝授权请求（Info.plist 缺少 usage description 键），状态永远停在 `notDetermined`，一个 fix 都
+拿不到；未签名的 bundle 同样不行。`make link` 因此产出
+`dist/CarLifeLink.app/Contents/MacOS/carlife-link` 并做 ad-hoc 签名，由 `carlifed` 直接 exec 启动
+（不需要 `open`，子进程的 stdout/stderr 照常归后端）。授权只问一次，之后重建不改变身份。
+
+应答里始终声明支持 GPS（`flag=1`，频率 1 Hz）：订阅请求在链路启动后一两秒就到，此时授权对话框
+可能还开着，而手机每个会话只订阅一次，回「没有 GPS」会让整个会话都没有位置数据。没有 fix 时照常
+按频率发报文，`antennaState` 填 `-1`（指南的「GPS 不可用」），之后的授权或定位一旦就绪即刻开始上报。
 
 ## 与 playport 前端的接口对齐
 
