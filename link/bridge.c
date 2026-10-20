@@ -412,9 +412,11 @@ static int rx_fill(struct rx_stream *s, unsigned int need)
         unsigned int want = need - s->len;
         int st;
 
-        if (want < packet) {
-            want = packet;
-        }
+        /* Ask for a whole number of max-size packets, rounded up. aoa_read_some cannot hand
+         * the device a request that is not packet-aligned, and it rounds down: sizing the
+         * transfer below what the frame still needs makes every message come back for its
+         * last few bytes in a second round trip. */
+        want = (want + packet - 1) / packet * packet;
         if (ensure_cap(&s->buf, &s->cap, (size_t)s->len + want) != 0) {
             aoa_log_error("failed to allocate %u-byte receive buffer", s->len + want);
             return -1;
