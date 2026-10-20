@@ -66,9 +66,6 @@ enum {
     EV_AUDIO_SEEK = 6
 };
 
-/* CH_CTRL */
-enum { EV_CTRL_UI_ACTION_SOUND = 1 };
-
 /* ---- Downstream: Go backend -> carlife-link ---- */
 
 /* CH_CMD */

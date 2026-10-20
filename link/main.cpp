@@ -757,11 +757,6 @@ static void cb_vr_stop(void)
     send_frame(CH_VR, EV_AUDIO_STOP, NULL, 0);
 }
 
-static void cb_ctrl_ui_action_sound(void)
-{
-    send_frame(CH_CTRL, EV_CTRL_UI_ACTION_SOUND, NULL, 0);
-}
-
 /* ------------------------------------------------- Channel receive threads */
 
 static void* cmd_receive_thread(void*)
@@ -852,17 +847,6 @@ static void* vr_receive_thread(void*)
     while (lib->vrReceiveOperation() != -1) {
     }
     log_line("voice channel receiver stopped");
-    return NULL;
-}
-
-static void* ctrl_receive_thread(void*)
-{
-    CCarLifeLib* lib = CCarLifeLib::getInstance();
-    lib->ctrlRegisterUIActionSound(cb_ctrl_ui_action_sound);
-
-    while (lib->ctrlReceiveOperation() != -1) {
-    }
-    log_line("control channel receiver stopped");
     return NULL;
 }
 
@@ -1369,12 +1353,17 @@ int main(int argc, char** argv)
     }
     log_line("all six channels connected (127.0.0.1 local ports)");
 
+    /* There is no control-channel receive thread: CTRL is a send-only channel here.
+     * CTranRecvPackageProcess::receivePackageHead() has no CTRL_CHANNEL case, so it takes the
+     * default branch, logs and returns true without reading the socket; receivePackageData()
+     * likewise breaks out of the CTRL_CHANNEL case without reading. ctrlReceiveOperation()
+     * therefore returns 0 immediately on every call, and a loop around it spins on one core:
+     * measured a full core, roughly 360k flushed log lines per second into /dev/null. */
     start_thread(cmd_receive_thread, "command channel");
     start_thread(video_receive_thread, "video channel");
     start_thread(media_receive_thread, "audio channel");
     start_thread(tts_receive_thread, "TTS channel");
     start_thread(vr_receive_thread, "voice channel");
-    start_thread(ctrl_receive_thread, "control channel");
     start_thread(backend_loop, "backend");
 
     log_line("ready, waiting for the Go backend to connect");
