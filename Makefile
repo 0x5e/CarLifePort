@@ -30,17 +30,28 @@ CXX := clang++
 # ------------------------------------------------------------------------- everything
 all: sdk link server web
 	@printf '\n\033[1;32mbuild complete\033[0m\n'
-	@printf '  dist/carlife-link              + libcarlifevehicle.dylib\n'
+	@printf '  dist/CarLifeLink.app           (link, signed app bundle for CoreLocation)\n'
+	@printf '  dist/libcarlifevehicle.dylib\n'
 	@printf '  dist/carlifed                  (browser client embedded)\n'
 	@printf '\nrun dist/carlifed to start everything\n'
 
 # --------------------------------------------------------------------------- native SDK
 # The vendored Baidu CarLife head-unit library (CarLife-Vehicle-Lib) and the protobuf 2.5.0
-# static library it serializes with. Both are built from vendored sources and stay
-# unmodified, apart from the 3-line arm64 patch applied by scripts/patch-protobuf.py.
+# static library it serializes with, both built from vendored sources. The library needs a
+# few code changes for the vehicle data subscription (see 「车载数据」 in README); they live
+# in patches/ rather than in the submodule, so that vendor/carlife stays at the upstream
+# commit. protobuf is unmodified, apart from the 3-line arm64 patch applied by
+# scripts/patch-protobuf.py.
 
 LIB_SRC  := $(ROOT)/vendor/carlife/CarLife-Vehicle-Lib/LibSource
 LIB_DIRS := core libwrapper modules utility protobuf/cc/src
+
+# The patch is applied to the submodule in place: that is where the sources are compiled
+# from, and where the headers the link half includes come from. The stamp makes the step
+# run once per change of the patch, and the checkout in it makes the step repeatable --
+# applying a patch on top of itself either fails or applies the hunks twice.
+CARLIFE_PATCH := $(ROOT)/patches/carlife-vehicle-lib.patch
+CARLIFE_STAMP := $(BUILD)/.carlife-patched
 
 PB_TARBALL := $(ROOT)/vendor/carlife/CarLife-Vehicle-Lib/protobuf-2.5.0.tar.gz
 PB_SRC     := $(BUILD)/protobuf-2.5.0
@@ -62,6 +73,12 @@ LIB_CXXFLAGS := -std=gnu++98 -O2 -w -fPIC $(LIB_INCLUDES)
 
 sdk: $(LIB_DYLIB)
 
+$(CARLIFE_STAMP): $(CARLIFE_PATCH)
+	@printf '\n\033[1;36m==> vendored CarLife library (apply patches/)\033[0m\n'
+	@git -C $(ROOT)/vendor/carlife checkout -- .
+	@cd $(ROOT)/vendor/carlife && patch -p1 --batch < $(CARLIFE_PATCH)
+	@touch $@
+
 $(LIB_DYLIB): $(LIB_OBJS) $(PB_LIB)
 	@printf '\n\033[1;36m==> native SDK (%s sources)\033[0m\n' '$(words $(LIB_SRCS))'
 	@mkdir -p $(DIST)
@@ -72,12 +89,13 @@ $(LIB_DYLIB): $(LIB_OBJS) $(PB_LIB)
 # Objects mirror the source tree under .build/obj. -MMD -MP records the headers each one
 # includes, so editing a header rebuilds exactly the objects that use it. protobuf is an
 # order-only prerequisite: the objects include its installed headers, but touching its
-# static library must not rebuild all of them.
-$(LIB_OBJ)/%.o: $(LIB_SRC)/%.cpp | $(PB_LIB)
+# static library must not rebuild all of them. The patch stamp is not: it rewrites the
+# sources the objects were compiled from, so an object has to be rebuilt after it.
+$(LIB_OBJ)/%.o: $(LIB_SRC)/%.cpp $(CARLIFE_STAMP) | $(PB_LIB)
 	@mkdir -p $(@D)
 	$(CXX) $(LIB_CXXFLAGS) -MMD -MP -c $< -o $@
 
-$(LIB_OBJ)/%.o: $(LIB_SRC)/%.cc | $(PB_LIB)
+$(LIB_OBJ)/%.o: $(LIB_SRC)/%.cc $(CARLIFE_STAMP) | $(PB_LIB)
 	@mkdir -p $(@D)
 	$(CXX) $(LIB_CXXFLAGS) -MMD -MP -c $< -o $@
 

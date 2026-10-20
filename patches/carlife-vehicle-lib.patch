@@ -1,0 +1,59 @@
+diff --git a/CarLife-Vehicle-Lib/LibSource/core/CTranRecvPackageProcess.cpp b/CarLife-Vehicle-Lib/LibSource/core/CTranRecvPackageProcess.cpp
+index e1f35d6..0681c46 100755
+--- a/CarLife-Vehicle-Lib/LibSource/core/CTranRecvPackageProcess.cpp
++++ b/CarLife-Vehicle-Lib/LibSource/core/CTranRecvPackageProcess.cpp
+@@ -969,7 +969,7 @@ bool CTranRecvPackageProcess::receivePackageData() {
+ }
+ 
+ void CTranRecvPackageProcess::packageDataAnalysis() {
+-	if(0==analyzedHead.packageDataSize) {
++	if(0==analyzedHead.packageDataSize && MSG_CMD_CAR_DATA_SUBSCRIBE!=analyzedHead.packageHeadType) {
+ 		return;
+ 		}
+ 
+@@ -1163,6 +1163,10 @@ void CTranRecvPackageProcess::packageDataAnalysis() {
+ 				
+ 				cnt=carlifeVehicleInfoList.cnt();
+ 
++				if(0==cnt) {
++					cnt=carlifeVehicleInfoList.vehicleinfo_size();
++				}
++
+ 				if(cnt>vehicleInfoNum) {
+ 					CCarLifeLog::carLifeLogLnWithPrefix("vehicle info memory is low!!");
+ 
+@@ -1202,6 +1206,10 @@ void CTranRecvPackageProcess::packageDataAnalysis() {
+ 				
+ 				cnt=carlifeVehicleInfoList.cnt();
+ 
++				if(0==cnt) {
++					cnt=carlifeVehicleInfoList.vehicleinfo_size();
++				}
++
+ 				if(cnt>vehicleInfoNum) {
+ 					CCarLifeLog::carLifeLogLnWithPrefix("vehicle info memory is low!!");
+ 
+@@ -1241,6 +1249,10 @@ void CTranRecvPackageProcess::packageDataAnalysis() {
+ 				
+ 				cnt=carlifeVehicleInfoList.cnt();
+ 
++				if(0==cnt) {
++					cnt=carlifeVehicleInfoList.vehicleinfo_size();
++				}
++
+ 				if(cnt>vehicleInfoNum) {
+ 					CCarLifeLog::carLifeLogLnWithPrefix("vehicle info memory is low!!");
+ 
+diff --git a/CarLife-Vehicle-Lib/LibSource/include/CTranRecvPackageProcess.h b/CarLife-Vehicle-Lib/LibSource/include/CTranRecvPackageProcess.h
+index a932a37..57c3b85 100755
+--- a/CarLife-Vehicle-Lib/LibSource/include/CTranRecvPackageProcess.h
++++ b/CarLife-Vehicle-Lib/LibSource/include/CTranRecvPackageProcess.h
+@@ -122,7 +122,7 @@ typedef enum EPackageHeadType{
+ 	MSG_CMD_GEAR_INFO=0x00010029,
+ 	MSG_CMD_NAVI_NEXT_TURN_INFO=0x00010030,
+ 	MSG_CMD_CAR_DATA_SUBSCRIBE=0x00010031,
+-	MSG_CMD_CAR_DATA_SUBSCRIBE_DONE=0x00010032,
++	MSG_CMD_CAR_DATA_SUBSCRIBE_DONE=0x00018032,
+ 	MSG_CMD_CAR_DATA_SUBSCRIBE_START=0x00010033,
+ 	MSG_CMD_CAR_DATA_SUBSCRIBE_STOP=0x00010034,
+ 
