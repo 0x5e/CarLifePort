@@ -150,11 +150,16 @@ link: sdk
 # compiles into carlifed. That staging directory is generated (and ignored by git), so the
 # vendored copy stays the only one in the tree.
 #
-# The viewer is built with the copy changes in patches/playport-web.patch. It was written
-# for CarPlay over a wireless connection, so its labels, its connection guide and its brand
-# name describe a different product; the patch replaces strings only, no markup or logic.
-# Like the library patch it is applied to the submodule in place, behind a stamp, after a
-# checkout that makes the step repeatable.
+# The viewer was written for CarPlay over a wireless connection, so its copy names another
+# product. Only strings change -- no markup, no logic -- so they are rewritten in place
+# rather than kept as a patch file. The rules are idempotent, so running them on every build
+# needs neither a stamp nor a checkout; the grep after them turns an upstream copy change
+# into a build failure instead of a silently skipped hunk.
+#
+# Sentence-level rules come first and match the original text. The words they introduce are
+# already the final form, so the keyword pass below cannot touch them twice. Keys, DOM ids,
+# CSS classes and the 'siri' message type are left alone: they are not copy, and renaming
+# them would drop the saved token, volume and gain values.
 server: web
 	@printf '\n\033[1;36m==> backend (browser client embedded)\033[0m\n'
 	@mkdir -p $(DIST)
@@ -162,23 +167,38 @@ server: web
 
 WEB_DIR   := $(ROOT)/vendor/playport/web
 WEB_STAGE := $(ROOT)/server/web
-WEB_PATCH := $(ROOT)/patches/playport-web.patch
-WEB_STAMP := $(BUILD)/.playport-web-patched
 
-web: $(WEB_STAMP)
-	@printf '\n\033[1;36m==> frontend (vendor/playport + patches/)\033[0m\n'
+# BSD sed takes the backup suffix as a separate argument, hence the empty string, and is
+# named outright because whatever sed comes first on PATH is not necessarily that one.
+SED := /usr/bin/sed
+
+WEB_SED := \
+    -e 's|<span>Talk to Siri</span>|<span>Voice assistant</span>|' \
+    -e 's|Talk to Siri|Talk to the voice assistant|g' \
+    -e 's|<span>Siri</span>|<span>Voice</span>|' \
+    -e 's|Siri and calls use|Voice and calls use|' \
+    -e 's|control CarPlay directly|control the phone directly|' \
+    -e 's|<b>Pair your iPhone</b>|<b>Plug in your phone</b>|' \
+    -e 's|<strong>Pair with PlayPort over Bluetooth</strong><p>On your iPhone, open Settings → Bluetooth and select the server’s device name. If asked for a PIN, enter <b>3939</b>.</p>|<strong>Plug your phone in with a USB cable</strong><p>Connect your Android phone to this machine with a data cable. A charge-only cable is not enough: the phone has to be seen as a device, not as a charger. The CarLife app opens on the phone by itself.</p>|' \
+    -e 's|<p>Keep the iPhone and server on the same Wi-Fi network. Accept the CarPlay prompt on your iPhone; the screen appears automatically.</p>|<p>Allow the connection when your phone asks, and pick the CarLife app if it offers a choice. The screen appears here automatically, and the phone charges while it is plugged in.</p>|' \
+    -e 's|PlayPort|CarLifePort|g' \
+    -e 's|CARPLAY|CARLIFE|g' \
+    -e 's|CarPlay|CarLife|g' \
+    -e 's|iPhone|Android phone|g'
+
+web:
+	@printf '\n\033[1;36m==> frontend (vendor/playport, copy rewritten)\033[0m\n'
 	@if [ ! -d $(WEB_DIR)/node_modules ]; then \
 	  echo "== first build, installing web dependencies"; \
 	  cd $(WEB_DIR) && npm install --no-package-lock; \
 	fi
+	@cd $(WEB_DIR) && $(SED) -i '' $(WEB_SED) index.html src/main.ts
+	@cd $(WEB_DIR) && if /usr/bin/grep -nE 'PlayPort|CarPlay|CARPLAY|iPhone|Siri|3939' index.html src/main.ts; then \
+	  echo "viewer copy still names the upstream product, update the sed rules in the top-level Makefile" >&2; \
+	  exit 1; \
+	fi
 	@cd $(WEB_DIR) && npm run build
 	@rm -rf $(WEB_STAGE) && cp -R $(WEB_DIR)/dist $(WEB_STAGE)
-
-$(WEB_STAMP): $(WEB_PATCH)
-	@printf '\n\033[1;36m==> vendored viewer (apply patches/)\033[0m\n'
-	@git -C $(ROOT)/vendor/playport checkout -- web
-	@cd $(ROOT)/vendor/playport && patch -p1 --batch < $(WEB_PATCH)
-	@touch $@
 
 # ------------------------------------------------------------------------------ clean
 # dist/, .build/ and the staged frontend go away entirely. vendor/playport/web/node_modules

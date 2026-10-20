@@ -59,7 +59,7 @@ make clean   # 删除 dist/、.build/ 与 server/web/
 | `make sdk` | 原生库：protobuf 2.5.0 + CarLife 协议栈 | `dist/CarLifeLink.app/Contents/Frameworks/libcarlifevehicle.dylib` |
 | `make link` | 链接进程（USB 传输 + 车机协议栈） | `dist/CarLifeLink.app` |
 | `make server` | Go 后端（含编译进去的前端） | `dist/carlifed` |
-| `make web` | 前端（playport + 文案补丁，暂存到 `server/web` 供嵌入） | — |
+| `make web` | 前端（playport + 文案改写，暂存到 `server/web` 供嵌入） | — |
 | `make clean` | 删除 `dist/`、`.build/` 与 `server/web/` | — |
 
 首次全量构建可以加 `-j`（`make -j8 all`）并行编译原生库的 69 个源文件。
@@ -68,10 +68,10 @@ make clean   # 删除 dist/、.build/ 与 server/web/
 由 `server/webassets.go` 的 `go:embed` 编译进 `carlifed`，运行时只从内存提供，不读磁盘。
 `server/web` 是生成物、不进版本库，仓库里仍只有 vendor 那一份前端。
 
-它写的是 CarPlay 无线投屏，界面上的品牌、按钮与连接指引都不适用，因此改动集中在
-`patches/playport-web.patch`：只替换字符串（品牌、CarPlay/CarLife、iPhone/Android、Siri 语音助手、
-连接指引里的蓝牙配对改成 USB 连接），不碰标记与逻辑。`make web` 构建前把子模块还原再应用，戳是
-`.build/.playport-web-patched`，与原生库那份补丁同一套做法。
+它写的是 CarPlay 无线投屏，界面上的品牌、按钮与连接指引都不适用，因此 `make web` 构建前用
+`/usr/bin/sed` 就地改写 `vendor/playport/web` 里的字符串：品牌、CarPlay/CarLife、iPhone/Android、
+Siri 语音助手、连接指引里的蓝牙配对改成 USB 连接，不碰标记与逻辑。规则幂等，每次构建重跑，
+不需要额外的补丁文件；改写后会 grep 一遍，上游文案变了就直接构建失败，不会静默跳过。
 
 `carlife-link` 放在 `dist/CarLifeLink.app` 里，`carlifed` 按自身所在目录拼出这个路径（定位授权要求，
 见「车载数据」）。原生库也在这个 bundle 的 `Contents/Frameworks` 下：bundle 之外的代码不在它的签名范围
