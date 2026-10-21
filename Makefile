@@ -160,10 +160,16 @@ link: sdk
 # already the final form, so the keyword pass below cannot touch them twice. Keys, DOM ids,
 # CSS classes and the 'siri' message type are left alone: they are not copy, and renaming
 # them would drop the saved token, volume and gain values.
+#
+# Signed after the build. go writes the new Mach-O over the old file in place, which leaves
+# the signature embedded in it pointing at bytes that are no longer there, and the kernel
+# then kills the result at exec with no output at all -- it reads as a crash in the program.
+# Re-signing replaces that signature with one that matches what is there now.
 server: web
 	@printf '\n\033[1;36m==> backend (browser client embedded)\033[0m\n'
 	@mkdir -p $(DIST)
 	@cd $(ROOT)/server && go build -o $(DIST)/carlifed .
+	@codesign --force --sign - $(DIST)/carlifed
 
 WEB_DIR   := $(ROOT)/vendor/playport/web
 WEB_STAGE := $(ROOT)/server/web
