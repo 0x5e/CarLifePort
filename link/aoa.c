@@ -145,10 +145,12 @@ static int is_accessory_pid(unsigned short vid, unsigned short pid)
 struct devnames {
     char maker[96];
     char prod[128];
+    char serial[64];
 };
 
-/* Phone vendor keywords: on most phones iProduct is only the model name (e.g. "Pixel 8"),
- * so matching the vendor string is more reliable */
+/* Phone vendor keywords. Request 51 is what establishes AOA support, so these only rank one
+ * candidate above another: on most phones iProduct is just the model name (e.g. "Pixel 8"),
+ * which is why the vendor string is matched as well. */
 static const char *const kPhoneMaker[] = {
     "google", "xiaomi",  "redmi",  "poco",    "samsung",  "oppo",   "oneplus", "vivo",
     "huawei", "honor",   "meizu",  "realme",  "motorola", "sony",   "zte",     "nubia",
@@ -160,12 +162,17 @@ static void read_names(libusb_device_handle *h, const struct libusb_device_descr
 {
     n->maker[0] = '\0';
     n->prod[0] = '\0';
+    n->serial[0] = '\0';
     if (d->iManufacturer > 0) {
         libusb_get_string_descriptor_ascii(h, d->iManufacturer, (unsigned char *)n->maker,
                                           sizeof(n->maker));
     }
     if (d->iProduct > 0) {
         libusb_get_string_descriptor_ascii(h, d->iProduct, (unsigned char *)n->prod, sizeof(n->prod));
+    }
+    if (d->iSerialNumber > 0) {
+        libusb_get_string_descriptor_ascii(h, d->iSerialNumber, (unsigned char *)n->serial,
+                                          sizeof(n->serial));
     }
 }
 
@@ -184,46 +191,78 @@ static int looks_like_phone(const struct devnames *n)
     return 0;
 }
 
-static const char *tag_for(const struct libusb_device_descriptor *d, const struct devnames *n)
+/* Request 51 is the only authoritative AOA test: a device without AOA support stalls this
+ * vendor request, and nothing in its descriptors tells the two apart. Returns the protocol
+ * version on success, 0 when the device does not support AOA. */
+static unsigned probe_aoa(libusb_device_handle *h)
 {
-    if (is_accessory_pid(d->idVendor, d->idProduct)) {
-        return "accessory";
+    unsigned char ver[2] = {0, 0};
+    unsigned version;
+
+    if (libusb_control_transfer(h, REQ_TYPE_IN_VENDOR, AOA_GET_PROTOCOL, 0, 0, ver, 2,
+                                EP0_TIMEOUT_MS) < 0) {
+        return 0;
     }
-    if (d->idVendor == IPHONE_VID) {
-        return "skip_apple";
-    }
-    if (d->bDeviceClass == 0x03) {
-        return "skip_hid";
-    }
-    if (d->bDeviceClass == 0x08) {
-        return "skip_storage";
-    }
-    if (d->bDeviceClass == 0x09) {
-        return "skip_hub";
-    }
-    if (looks_like_phone(n)) {
-        return "candidate_phone";
-    }
-    return "skip_unknown";
+    version = ((unsigned)ver[1] << 8) | (unsigned)ver[0];
+    return version >= 1 && version <= 2 ? version : 0;
 }
 
-/* Auto-pick score: 0 = not a candidate, 2 = likely phone, 3 = already accessory.
- * Anything that is neither an accessory nor recognisable as a phone scores 0 and is never
- * picked automatically -- hubs, keyboards, network adapters and the like would otherwise be
- * claimed while the phone is not plugged in yet, and the failed claim would abort startup.
- * A phone whose vendor string is not recognised can still be selected with --vid/--pid. */
-static int score_for(const struct libusb_device_descriptor *d, const struct devnames *n)
+struct verdict {
+    int score;
+    const char *tag;
+};
+
+/* Score: 0 = not a candidate, 1 = phone by name only, 2 = supports AOA, 3 = already
+ * accessory. Request 51 decides; the vendor name only breaks ranking, so that a device
+ * sharing a brand string (a gamepad, a dock) cannot take precedence over a real phone. A
+ * name match still scores 1 and is tried when nothing answered 51, which keeps the
+ * selection recoverable for a phone that is temporarily not answering.
+ *
+ * `probe` is 0 when the caller must not send anything to the device (--list), in which case
+ * request 51 is skipped and only the descriptor and the names are judged. */
+static struct verdict classify(libusb_device_handle *h, int probe,
+                               const struct libusb_device_descriptor *d,
+                               const struct devnames *n)
 {
+    struct verdict v;
+    int named;
+
     if (is_accessory_pid(d->idVendor, d->idProduct)) {
-        return 3;
+        v.score = 3;
+        v.tag = "accessory";
+        return v;
     }
     if (d->idVendor == IPHONE_VID) {
-        return 0;
+        v.score = 0;
+        v.tag = "skip_apple";
+        return v;
     }
-    if (d->bDeviceClass == 0x03 || d->bDeviceClass == 0x08 || d->bDeviceClass == 0x09) {
-        return 0;
+    /* Phones declare their functions at interface level and present device class 0x00, or
+     * 0xEF when they use an interface association. Hubs, keyboards, storage and network
+     * adapters carry a real device class, so this whitelist excludes them by construction. */
+    if (d->bDeviceClass != 0x00 && d->bDeviceClass != 0xEF) {
+        v.score = 0;
+        v.tag = "skip_class";
+        return v;
     }
-    return looks_like_phone(n) ? 2 : 0;
+    if (h == NULL) {
+        v.score = 0;
+        v.tag = "cannot_open";
+        return v;
+    }
+    if (probe && probe_aoa(h) != 0) {
+        v.score = 2;
+        v.tag = "aoa";
+        return v;
+    }
+    named = looks_like_phone(n);
+    v.score = named ? 1 : 0;
+    if (probe) {
+        v.tag = named ? "brand_only" : "no_aoa";
+    } else {
+        v.tag = named ? "brand_only" : "probe_required";
+    }
+    return v;
 }
 
 /* ------------------------------------------------------------------ init */
@@ -264,21 +303,29 @@ void aoa_list_devices(void)
         struct libusb_device_descriptor d;
         libusb_device_handle *h = NULL;
         struct devnames nm;
+        struct verdict v;
 
         nm.maker[0] = '\0';
         nm.prod[0] = '\0';
+        nm.serial[0] = '\0';
         if (libusb_get_device_descriptor(list[i], &d) != 0) {
             continue;
         }
         if (libusb_open(list[i], &h) == 0) {
             read_names(h, &d, &nm);
-            libusb_close(h);
         } else {
             snprintf(nm.prod, sizeof(nm.prod), "(cannot open: held by another program?)");
         }
-        aoa_log("aoa.device vid=%04x pid=%04x product=\"%s\" vendor=\"%s\" tag=%s", d.idVendor,
-                d.idProduct, nm.prod[0] ? nm.prod : "-", nm.maker[0] ? nm.maker : "-",
-                tag_for(&d, &nm));
+        /* A listing must not send anything to the devices, so request 51 is not sent here:
+         * a device that would have to be probed shows up as probe_required. */
+        v = classify(h, 0, &d, &nm);
+        aoa_log("aoa.device vid=%04x pid=%04x class=0x%02x product=\"%s\" vendor=\"%s\" "
+                "serial=%s tag=%s",
+                d.idVendor, d.idProduct, d.bDeviceClass, nm.prod[0] ? nm.prod : "-",
+                nm.maker[0] ? nm.maker : "-", nm.serial[0] ? nm.serial : "-", v.tag);
+        if (h != NULL) {
+            libusb_close(h);
+        }
     }
     libusb_free_device_list(list, 1);
 }
@@ -309,6 +356,8 @@ static int pick_and_open(int want_vid, int want_pid, struct aoa_device *out, int
     libusb_device_handle *best = NULL;
     libusb_device *best_dev = NULL;
     struct libusb_device_descriptor best_desc;
+    char best_serial[64] = {0};
+    int best_ties = 0;
     int best_score = -1;
     int best_acc = 0;
     int want_specified = (want_vid >= 0 || want_pid >= 0);
@@ -327,10 +376,12 @@ static int pick_and_open(int want_vid, int want_pid, struct aoa_device *out, int
         struct libusb_device_descriptor d;
         libusb_device_handle *h = NULL;
         struct devnames nm;
+        struct verdict v;
         int acc, score;
 
         nm.maker[0] = '\0';
         nm.prod[0] = '\0';
+        nm.serial[0] = '\0';
         if (libusb_get_device_descriptor(list[i], &d) != 0) {
             continue;
         }
@@ -341,10 +392,12 @@ static int pick_and_open(int want_vid, int want_pid, struct aoa_device *out, int
             snprintf(nm.prod, sizeof(nm.prod), "(cannot open)");
         }
 
+        v = classify(h, 1, &d, &nm);
         if (verbose) {
-            aoa_log("aoa.device vid=%04x pid=%04x product=\"%s\" vendor=\"%s\" tag=%s",
-                    d.idVendor, d.idProduct, nm.prod[0] ? nm.prod : "-",
-                    nm.maker[0] ? nm.maker : "-", tag_for(&d, &nm));
+            aoa_log("aoa.device vid=%04x pid=%04x class=0x%02x product=\"%s\" vendor=\"%s\" "
+                    "serial=%s tag=%s",
+                    d.idVendor, d.idProduct, d.bDeviceClass, nm.prod[0] ? nm.prod : "-",
+                    nm.maker[0] ? nm.maker : "-", nm.serial[0] ? nm.serial : "-", v.tag);
         }
 
         acc = is_accessory_pid(d.idVendor, d.idProduct);
@@ -355,23 +408,38 @@ static int pick_and_open(int want_vid, int want_pid, struct aoa_device *out, int
                 score = 3;
             }
         } else {
-            score = score_for(&d, &nm);
+            score = v.score;
         }
 
-        if (score > 0 && score > best_score && h != NULL) {
-            best_score = score;
-            best_dev = list[i];
-            best_desc = d;
-            best_acc = acc;
-            if (best != NULL) {
-                libusb_close(best);
+        if (score > 0 && h != NULL) {
+            if (score > best_score) {
+                best_score = score;
+                best_dev = list[i];
+                best_desc = d;
+                best_acc = acc;
+                snprintf(best_serial, sizeof(best_serial), "%s", nm.serial);
+                if (best != NULL) {
+                    libusb_close(best);
+                }
+                best = h;
+                h = NULL;
+                best_ties = 0;
+            } else if (score == best_score) {
+                best_ties++;
             }
-            best = h;
-            h = NULL;
         }
         if (h != NULL) {
             libusb_close(h);
         }
+    }
+
+    /* Two devices of the same rank: the pick is the first one enumerated, which is stable
+     * but arbitrary. Said once per selection, with the serial of the chosen one, so that
+     * --vid/--pid can be used deliberately instead. */
+    if (best != NULL && best_ties > 0) {
+        aoa_log_warn("aoa.device_ambiguous score=%d count=%d chosen_serial=%s "
+                     "action=\"pass --vid/--pid to choose\"",
+                     best_score, best_ties + 1, best_serial[0] ? best_serial : "-");
     }
 
     if (is_accessory_out != NULL) {
