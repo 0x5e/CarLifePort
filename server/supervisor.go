@@ -46,15 +46,21 @@ type supervisor struct {
 }
 
 func newSupervisor(cfg config) *supervisor {
+	// The link takes its flags from the command line; carlifed owns the values, so it
+	// passes them explicitly instead of relying on the binary's own defaults.
+	args := []string{
+		"--socket", defaultSocketPath,
+		"--channel", cfg.channel,
+		"--cuid", cfg.cuid,
+	}
+	// A flag rather than a value: the link only has the one behaviour, so an argument that
+	// is present turns it on.
+	if cfg.gps {
+		args = append(args, "--gps")
+	}
 	return &supervisor{
 		linkPath: cfg.linkPath,
-		// The link takes its flags from the command line; carlifed owns the values, so it
-		// passes them explicitly instead of relying on the binary's own defaults.
-		linkArgs: []string{
-			"--socket", defaultSocketPath,
-			"--channel", cfg.channel,
-			"--cuid", cfg.cuid,
-		},
+		linkArgs: args,
 	}
 }
 

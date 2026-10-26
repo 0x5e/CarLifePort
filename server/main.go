@@ -101,6 +101,22 @@ func envString(name, fallback string) string {
 	return fallback
 }
 
+// envFlag reads a 0/1 switch. A value that is neither aborts instead of falling back: a
+// typo would otherwise turn a feature on or off without anyone noticing.
+func envFlag(name string, fallback bool) bool {
+	switch value := strings.TrimSpace(os.Getenv(name)); value {
+	case "":
+		return fallback
+	case "0":
+		return false
+	case "1":
+		return true
+	default:
+		fatalf(moduleSelf, "config.invalid name=%s value=%q want=0_or_1", name, value)
+		return fallback
+	}
+}
+
 // hostName returns the machine's hostname, the head unit name the web client shows. The
 // fallback only matters if the lookup fails, which it does not in practice; it keeps the
 // browser from showing an empty name.
@@ -154,6 +170,7 @@ type config struct {
 	height     int
 	channel    string
 	cuid       string
+	gps        bool
 }
 
 // executableDir returns the directory this binary was started from. os.Executable resolves
@@ -216,6 +233,11 @@ func loadConfig() config {
 		// Head unit id, taken from the machine: the guide requires it to be unique per head
 		// unit, and the phone drops the connection when it sees a repeat.
 		cuid: machineID(),
+		// The vehicle data channel. Off by default: sampling a position means asking macOS
+		// for Location Services access on first use, which a machine that only mirrors the
+		// phone does not need. With it off the link declares no module, so the phone does
+		// not subscribe.
+		gps: envFlag("CL_GPS", false),
 	}
 }
 
@@ -228,6 +250,8 @@ defaults to a bundle next to this binary, which is where the Makefile puts it.
                                            <width>x<height>@<fps>
   CL_WEB_ADDR      0.0.0.0:8080            HTTPS listen address
   CL_CHANNEL       20062100                vendor channel number reported to the phone
+  CL_GPS           0                       1 reports this machine's position on the vehicle
+                                           data channel; 0 declares no such module
   CL_LOG_LEVEL     info                    debug, info, warn or error; debug adds the
                                            per-frame telemetry and the link's copy of
                                            the events this process already reports

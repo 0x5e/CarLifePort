@@ -1478,6 +1478,13 @@ static void cb_vr_stop(void)
  */
 static const u32 kCarDataGps = 0;
 
+/* Whether this head unit produces a position at all. Off unless carlifed is started with
+ * --gps, which CL_GPS=1 does: the sampler asks macOS for Location Services access the first
+ * time it runs, and a machine that only mirrors the phone has no reason to prompt for it.
+ * With this off nothing is declared on the vehicle data channel, so the phone does not
+ * subscribe to a module that would never report. */
+static int g_gps_enabled = 0;
+
 /* Set by ..._START, cleared by ..._STOP, read by the reporting thread below. */
 static std::atomic<int> g_gps_reporting(0);
 
@@ -1485,28 +1492,6 @@ static std::atomic<int> g_gps_reporting(0);
  * of its own in ..._START and it is not honoured: the fix comes from Wi-Fi positioning, so
  * sampling it faster than the protocol's default would only repeat the same position. */
 static const int kGpsReportIntervalSeconds = 1;
-
-/* The library fills cnt entries of a fixed array of ten and leaves the rest as it found
- * it, so only the first cnt entries of a list mean anything. Those ids as "0" or "0,1",
- * "none" when there are none. */
-static void format_module_list(const S_VEHICLE_INFO_LIST* list, char* ids, size_t size)
-{
-    size_t offset = 0;
-    ids[0] = '\0';
-
-    unsigned i = 0;
-    for (const S_VEHICLE_INFO* info = list->pVehicleInfo;
-         info != NULL && i < (unsigned)list->cnt; info = info->pNext, ++i) {
-        int written = snprintf(ids + offset, size - offset, offset == 0 ? "%d" : ",%d",
-                               (int)info->moduleID);
-        if (written > 0 && (size_t)written < size - offset) {
-            offset += (size_t)written;
-        }
-    }
-    if (offset == 0) {
-        snprintf(ids, size, "none");
-    }
-}
 
 /* An empty list is read as naming every module. The phone asks for the module list with an
  * empty ..._SUBSCRIBE and takes what the reply offers; an empty ..._START is the same
@@ -1541,6 +1526,18 @@ static void cb_car_data_subscribe(S_VEHICLE_INFO_LIST* list)
 {
     msg_recv(MSG_CMD_CAR_DATA_SUBSCRIBE, *list);
 
+    /* Without a position there is no module to declare, and an empty reply is how the guide
+     * says so. Declaring GPS and then never sending one would leave the phone waiting on a
+     * module that exists. */
+    if (!g_gps_enabled) {
+        S_VEHICLE_INFO_LIST reply;
+        reply.cnt = 0;
+        reply.pVehicleInfo = NULL;
+        SEND_MESSAGE(MSG_CMD_CAR_DATA_SUBSCRIBE_DONE,
+                     CCarLifeLib::getInstance()->cmdCarDataSubscribeDone(&reply), reply);
+        return;
+    }
+
     /* Support is declared whether or not a fix is available yet. The phone sends this once
      * per session, a second or two after the link starts, when the Location Services
      * prompt may still be open; answering "no GPS" here would leave the session without
@@ -1564,27 +1561,29 @@ static void cb_car_data_subscribe_start(S_VEHICLE_INFO_LIST* list)
 {
     msg_recv(MSG_CMD_CAR_DATA_SUBSCRIBE_START, *list);
 
-    char ids[48];
-    format_module_list(list, ids, sizeof(ids));
+    /* An empty list names every module, so this has to be answered before the list is
+     * looked at. */
+    if (!g_gps_enabled) {
+        log_line_warn("vehicle.gps_report_skipped reason=gps_disabled");
+        return;
+    }
     if (!vehicle_list_names(list, kCarDataGps)) {
-        log_line_warn("vehicle.gps_report_skipped modules=%s reason=not_gps", ids);
+        log_line_warn("vehicle.gps_report_skipped reason=not_gps");
         return;
     }
     g_gps_reporting.store(1);
-    log_line("vehicle.gps_report_started modules=%s rate_hz=%d", ids, kGpsReportIntervalSeconds);
+    log_line("vehicle.gps_report_started rate_hz=%d", kGpsReportIntervalSeconds);
 }
 
 static void cb_car_data_subscribe_stop(S_VEHICLE_INFO_LIST* list)
 {
     msg_recv(MSG_CMD_CAR_DATA_SUBSCRIBE_STOP, *list);
 
-    if (!vehicle_list_names(list, kCarDataGps)) {
+    if (!g_gps_enabled || !vehicle_list_names(list, kCarDataGps)) {
         return;
     }
-    char ids[48];
-    format_module_list(list, ids, sizeof(ids));
     g_gps_reporting.store(0);
-    log_line("vehicle.gps_report_stopped modules=%s", ids);
+    log_line("vehicle.gps_report_stopped");
 }
 
 /* Reports the latest fix once per interval while the phone is subscribed. Without a fix -
@@ -2153,6 +2152,7 @@ static void usage(const char* program)
             "  --host <address>   local address of the six channel ports (default 127.0.0.1)\n"
             "  --vid <0xXXXX>     target device VID (default: pick a phone)\n"
             "  --pid <0xXXXX>     target device PID (default: pick a phone)\n"
+            "  --gps              report a position on the vehicle data channel (default: off)\n"
             "  --list             list the USB devices and exit, without touching any device\n"
             "  -q, --quiet        do not print the protocol stack's runtime logs\n"
             "  -v, --verbose      also emit the protocol stack's internal logs (discarded by default)\n"
@@ -2183,6 +2183,8 @@ int main(int argc, char** argv)
             vid = (int)strtol(argv[++i], NULL, 0);
         } else if (strcmp(argv[i], "--pid") == 0 && i + 1 < argc) {
             pid = (int)strtol(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--gps") == 0) {
+            g_gps_enabled = 1;
         } else if (strcmp(argv[i], "--list") == 0) {
             list_only = 1;
         } else if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
@@ -2283,11 +2285,16 @@ int main(int argc, char** argv)
     start_thread(backend_loop, "backend");
 
     /* The vehicle data channel reports a position, which has to be sampled before the
-     * phone asks whether this head unit has one: start the sampler first. */
-    if (gps_start() != 0) {
-        log_line_warn("gps.sampler_start_failed");
+     * phone asks whether this head unit has one: start the sampler first. With GPS off
+     * nothing is sampled and nothing is declared, see g_gps_enabled. */
+    if (g_gps_enabled) {
+        if (gps_start() != 0) {
+            log_line_warn("gps.sampler_start_failed");
+        }
+        start_thread(gps_send_thread, "vehicle data");
+    } else {
+        log_line("gps.disabled reason=not_requested");
     }
-    start_thread(gps_send_thread, "vehicle data");
 
     log_line("process.ready backend=waiting");
 
