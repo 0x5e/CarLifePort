@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -207,7 +206,6 @@ func (s *session) requestAuthentication() {
 		errorf(moduleSession, "auth.start_failed err=%v consequence=phone_unauthenticated", err)
 		return
 	}
-	infof(moduleSession, "auth.exchange_started retry_interval=%s", authenRetryInterval)
 }
 
 // reportFrameRate logs the measured rate of the video frames arriving from the phone,
@@ -275,10 +273,10 @@ func (s *session) onCommandEvent(event linkEvent) {
 
 	case evProtocolMatch:
 		if len(event.payload) >= 4 {
-			status := binary.BigEndian.Uint32(event.payload)
-			if status == 1 {
-				infof(moduleSession, "session.version_confirmed")
-			} else {
+			// A match needs no line of its own: msg.recv already reports
+			// MSG_CMD_PROTOCOL_VERSION_MATCH_STATUS with its matchStatus. A value other
+			// than 1 is worth a warning, because the request below will not be answered.
+			if status := binary.BigEndian.Uint32(event.payload); status != 1 {
 				warnf(moduleSession, "session.version_mismatch status=%d expected=1", status)
 			}
 		}
@@ -298,7 +296,8 @@ func (s *session) onCommandEvent(event linkEvent) {
 		s.width, s.height = width, height
 		requestedFPS := s.requestedFPS
 		s.mu.Unlock()
-		infof(moduleSession, "video.ready width=%d height=%d fps=%d action=start_encoder", width, height, fps)
+		// The sizes are in msg.recv of MSG_CMD_VIDEO_ENCODER_INIT_DONE; what is worth a
+		// line here is the phone accepting fewer frames than it was asked for.
 		if fps > 0 && fps < requestedFPS {
 			warnf(moduleSession, "video.frame_rate_limited fps=%d requested_fps=%d", fps, requestedFPS)
 		}
@@ -311,51 +310,31 @@ func (s *session) onCommandEvent(event linkEvent) {
 		s.applyDeviceInfo(event.payload)
 
 	case evForeground:
-		infof(moduleSession, "phone.foreground")
 		s.broadcastState()
-
-	case evBackground:
-		infof(moduleSession, "phone.background")
-
-	case evScreenOn:
-		infof(moduleSession, "phone.screen state=on")
-
-	case evScreenOff:
-		infof(moduleSession, "phone.screen state=off")
 
 	case evTeleState:
 		if len(event.payload) >= 1 {
 			s.mu.Lock()
 			s.callState = int(event.payload[0])
 			s.mu.Unlock()
-			infof(moduleSession, "phone.call_state state=%d", event.payload[0])
 		}
 
 	case evMDExit:
-		infof(moduleSession, "phone.carlife_exited")
 		s.mu.Lock()
 		s.streaming = false
 		s.avcC = nil
 		s.mu.Unlock()
 		s.broadcastState()
 
-	case evMicWakeup:
-		infof(moduleSession, "voice.wakeup")
-
-	case evMicEnd:
-		infof(moduleSession, "voice.record_stopped")
-
-	case evMicRecog:
-		infof(moduleSession, "voice.recognition_started")
-
 	case evAuthenResult:
 		passed := len(event.payload) >= 1 && event.payload[0] == 1
 		s.mu.Lock()
 		s.authenDone = passed
 		s.mu.Unlock()
-		if passed {
-			infof(moduleSession, "auth.result result=authenticated")
-		} else {
+		if !passed {
+			// The pass comes through as msg.recv of MSG_CMD_MD_AUTHEN_RESULT with
+			// authenResult=true. The rejection is a warning, and it also has a
+			// consequence of its own.
 			warnf(moduleSession, "auth.result result=rejected retry_interval=%s", authenRetryInterval)
 			// A rejection leaves a "head unit not authorized" dialog on the phone that
 			// waits for a tap before CarLife can be used. Sending the home key dismisses
@@ -364,82 +343,9 @@ func (s *session) onCommandEvent(event linkEvent) {
 			s.sendHardKey(keyMain)
 		}
 
-	case evFeatureConfigRequest:
-		infof(moduleSession, "session.feature_config_replied")
-
-	case evModuleStatus:
-		infof(moduleSession, "phone.module_status state=%q", describeModuleStatus(event.payload))
-
-	case evGoToDesktop:
-		infof(moduleSession, "phone.app_state state=home")
-
 	case evLog:
 		debugf(moduleSession, "phone.log text=%q", string(event.payload))
 	}
-}
-
-// describeModuleStatus renders the module status the phone reports. The raw form is a JSON
-// list of {moduleID, statusID} pairs whose meaning is only in the module id names, and one
-// entry decides whether audio can arrive at all: module 3 (music) reports "running" only
-// while the phone is streaming program audio, so an idle music module means the phone has
-// nothing to play and no audio channel traffic is expected.
-func describeModuleStatus(payload []byte) string {
-	var entries []struct {
-		ModuleID int `json:"moduleID"`
-		StatusID int `json:"statusID"`
-	}
-	if err := json.Unmarshal(payload, &entries); err != nil {
-		return string(payload)
-	}
-	parts := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		parts = append(parts, moduleName(entry.ModuleID)+"="+moduleStatusName(entry.ModuleID, entry.StatusID))
-	}
-	return strings.Join(parts, " ")
-}
-
-// Module ids and status ids come from ModuleStatusModel.java in the CarLife vehicle library.
-func moduleName(moduleID int) string {
-	switch moduleID {
-	case 1:
-		return "phone"
-	case 2:
-		return "navi"
-	case 3:
-		return "music"
-	case 4:
-		return "voice"
-	case 5:
-		return "connect"
-	case 6:
-		return "mic"
-	}
-	return fmt.Sprintf("module%d", moduleID)
-}
-
-func moduleStatusName(moduleID, statusID int) string {
-	switch moduleID {
-	case 1: // phone
-		return statusName(statusID, "idle", "incoming", "outgoing")
-	case 2: // navi
-		return statusName(statusID, "idle", "start", "stop")
-	case 3: // music
-		return statusName(statusID, "idle", "running")
-	case 4: // voice
-		return statusName(statusID, "idle", "running", "mic-unsupported")
-	case 6: // mic
-		return statusName(statusID, "vehicle-mic", "phone-mic", "unsupported")
-	}
-	return strconv.Itoa(statusID)
-}
-
-// statusName picks the name for a status id, falling back to the number when the phone
-// reports one this build does not know.
-func statusName(statusID int, names ...string) string {
-	if statusID >= 0 && statusID < len(names) {
-		return names[statusID]
-	}
-	return strconv.Itoa(statusID)
 }
 
 func (s *session) applyDeviceInfo(payload []byte) {
@@ -456,24 +362,8 @@ func (s *session) applyDeviceInfo(payload []byte) {
 	s.deviceName = name
 	s.deviceModel = textField(info, "brand")
 	s.mu.Unlock()
-	// The phone leaves fields out rather than sending an empty name, so a missing one would
-	// otherwise leave a gap in the parentheses.
-	label := name
-	if label == "" {
-		label = "unknown model"
-	}
-	details := make([]string, 0, 2)
-	if manufacturer := textField(info, "manufacturer"); manufacturer != "" {
-		details = append(details, manufacturer)
-	}
-	if release := textField(info, "release"); release != "" {
-		details = append(details, "Android "+release)
-	}
-	if len(details) == 0 {
-		infof(moduleSession, "phone.device name=%q", label)
-	} else {
-		infof(moduleSession, "phone.device name=%q detail=%q", label, strings.Join(details, ", "))
-	}
+	// The whole record is in msg.recv of MSG_CMD_MD_INFO, field by field under the guide's
+	// names, so this only keeps what the web client shows.
 	s.broadcastState()
 }
 
@@ -509,7 +399,6 @@ func (s *session) requestVideo() {
 	s.mu.Lock()
 	width, height, fps := s.requestedWidth, s.requestedHeight, s.requestedFPS
 	s.mu.Unlock()
-	infof(moduleSession, "video.encoder_requested width=%d height=%d fps=%d", width, height, fps)
 	if err := s.link.sendVideoEncoderInit(int32(width), int32(height), int32(fps)); err != nil {
 		errorf(moduleSession, "video.encoder_request_failed err=%v consequence=mode_unchanged", err)
 	}
@@ -596,21 +485,16 @@ func (s *session) onAudioEvent(streamType byte, name string, event linkEvent) {
 			sampleRate = 48000
 		}
 		s.mu.Lock()
-		unchanged := s.audioSampleRate[streamType] == sampleRate && s.audioChannels[streamType] == channels
 		s.audioSampleRate[streamType] = sampleRate
 		s.audioChannels[streamType] = channels
 		s.audioSamples[streamType] = 0
 		s.mu.Unlock()
 		// A head unit that does not report the new vehicle version is told the parameters
 		// twice per start: the phone sends them from its older-protocol branch alongside a
-		// stop, and then again unconditionally (MusicAudioHelper.onMusicSocketInit). The
-		// repeat is only a logging nuisance, so it drops to debug level, but it is still
-		// forwarded: the browser builds the stream from this message.
-		if unchanged {
-			debugf(moduleSession, "audio.config ch=%s rate_hz=%d channels=%d repeat=1", name, sampleRate, channels)
-		} else {
-			infof(moduleSession, "audio.config ch=%s rate_hz=%d channels=%d", name, sampleRate, channels)
-		}
+		// stop, and then again unconditionally (MusicAudioHelper.onMusicSocketInit). Both
+		// show up as msg.recv of MSG_MEDIA_INIT with the same values, which is the phone's
+		// doing and not a re-send by the link. The second is still forwarded: the browser
+		// builds the stream from this message.
 		s.hub.BroadcastAudioConfig(streamType, encodeAudioConfig(streamType, sampleRate, channels, name, nil))
 
 	case evAudioData:
@@ -883,7 +767,8 @@ func (s *session) changeDisplay(width, height, fps int) error {
 	s.requestedWidth, s.requestedHeight, s.requestedFPS = width, height, fps
 	s.mu.Unlock()
 
-	infof(moduleSession, "video.mode_switch width=%d height=%d fps=%d", width, height, fps)
+	// No line of its own for the switch: the reset and the encoder init that follow are
+	// reported by the link as msg.send, with the same width, height and frame rate.
 	// Reset the encoder first, then renegotiate with the new mode; otherwise the phone
 	// will not start producing frames again.
 	_ = s.link.send(chCmd, cmdVideoEncoderReset, nil)

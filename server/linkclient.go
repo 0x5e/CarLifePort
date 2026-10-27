@@ -36,10 +36,9 @@ const (
 	evMicEnd               byte = 12
 	evMicRecog             byte = 13
 	evMDExit               byte = 14
-	evModuleStatus         byte = 15
-	evFeatureConfigRequest byte = 16
-	evAuthenResult         byte = 17
-	evGoToDesktop          byte = 18
+	evFeatureConfigRequest byte = 15
+	evAuthenResult         byte = 16
+	evGoToDesktop          byte = 17
 	evLog                  byte = 90
 
 	evVideoData      byte = 1

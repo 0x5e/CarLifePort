@@ -164,11 +164,11 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 17:08:36.415 INFO  [bridge]     usb.acquire step=wait_for_phone
 17:08:36.422 INFO  [stack]      link.listening path=/tmp/carlife-link.sock
 17:08:37.987 INFO  [link]       link.connected path=/tmp/carlife-link.sock
-17:08:41.203 INFO  [session]    video.ready width=1280 height=720 fps=60 action=start_encoder
+17:08:41.203 INFO  [stack]      msg.recv service_type=0x00010008(MSG_CMD_VIDEO_ENCODER_INIT_DONE) width=1280 height=720 frameRate=60
 17:08:41.208 DEBUG [session]    video.stats fps=59.8 frames=299 rate_kb_s=3612.4 window=5s requested_fps=60
 ```
 
-正文是「事件 字段=值…」。事件是 `<范围>.<对象>_<结果>` 形式的稳定名字（`session.version_confirmed`、
+正文是「事件 字段=值…」。事件是 `<范围>.<对象>_<结果>` 形式的稳定名字（`session.channels_ready`、
 `video.encoder_start_failed`），搜索按它过滤，例如 `grep bridge.frame_rejected`、`grep 'result=failed'`；
 字段里带单位后缀（`retry_ms`、`rate_hz`、`acc_m`），值是裸数字。句子、`failed to …` 这类叙述不写。
 
@@ -193,7 +193,7 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 
 | 级别 | 内容 |
 |---|---|
-| `debug` | 以上全部，外加周期性遥测（实测帧率、USB 传输的每通道转发统计、手机的播放进度）、逐次下发的按键与触摸，以及协议栈转交后端后重复记下的那一份事件日志 |
+| `debug` | 以上全部，外加周期性遥测（实测帧率、USB 传输的每通道转发统计）、每秒一次的 GPS 与播放进度 |
 | `info` | 状态变化：握手推进、会话开始与结束、客户端接入、链接进程重建 |
 | `warn` | 可以继续运行但需要留意：令牌不符、握手停滞、手机拒绝认证、车机对手机的鉴权校验未通过、帧率被限制、设备就绪前的握手重试、被丢弃的帧或连接、未识别的通道 tag |
 | `error` | 失败并中断：USB 与本地 socket 的读写失败、内存与线程创建失败、绑定或监听失败、六条通道建立失败、链接进程无法启动 |
@@ -207,15 +207,30 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 操作被放弃、或者链路要重建、进程要退出时标为 `error`。所以事件名里带 `_failed` 并不等于 `error`——
 设备就绪前反复重试的 `aoa.get_protocol result=failed` 是 `warn`，而 `aoa.read_failed` 是 `error`。
 
-标记的还有两类。一类是重复：协议栈每收到一个事件都在本地记一行，同时把事件当帧转给 `carlifed`，
-后者再记一行同义的日志，于是默认级别下同一件事出现两次。凡属这种情况，协议栈那行一律标为
-`DEBUG`：每个事件只在真正解释它的那一侧（`session`）留下一条 `info`，链接进程单独运行时仍能看到
-原始回调。协议栈独有的信息不在其列——蓝牙配对、导航播报、媒体信息、身份上报、六个通道的参数等
-仍按 `info` 输出。手机自己重发的事件同理：未上报新车机版本的车型每次开始播放都会收到两遍音频
-参数（手机分两处发送），重复的那一遍记 `DEBUG`。
+协议栈收发的每条 CarLife 消息各记一行，方向写在事件名里：`msg.send` 是车机发给手机，
+`msg.recv` 是手机发给车机。事件名叫 `msg` 而不是 `cmd`，因为这张表覆盖协议栈的六个通道
+——`MSG_MEDIA_INIT` 在媒体通道（0x00030001）、`MSG_TOUCH_ACTION` 在反控通道（0x00068001），
+通道号就是 service type 的高半部分。消息本身是一个字段：线上传的编号，括号里是指南的 `MSG_*`
+名字，所以一行可以直接对着文档读：
 
-另一类是逐次下发的输入命令：硬按键与触摸（action / down / up / move / click / long press）每发出
-一次就记一行 `DEBUG`。它们频率高、内容重复，只在下行排查时才有用。
+```
+17:08:41.101 INFO  [stack]  msg.send service_type=0x00018001(MSG_CMD_HU_PROTOCOL_VERSION) majorVersion=3 minorVersion=0
+17:08:41.207 INFO  [stack]  msg.recv service_type=0x00010026(MSG_CMD_MODULE_STATUS) modules=1 moduleID_0=3(music) statusID_0=0(idle)
+```
+
+字段直接铺在行尾，没有 JSON 包装：数值裸写，枚举写成「编号(名字)」，可能含空格的文本加引号并转义，
+列表项在字段名后加序号（`moduleID_0=0(GPS) supportFlag_0=1(WGS84) frequency_0=1`）。名字取自指南
+与厂商源码（表 10.2-1、10.3-2、10.4-2、10.5-2、10.6-3，模块号取自 `ModuleStatusModel.java`）；
+表里没有的取值保留原编号并写 `(UNKNOWN)`，不借用相邻的名字。
+
+这些消息的名字、编号、级别和字段列表都写在 `link/main.cpp` 的 `CARLIFE_MESSAGES` 表里，增删消息只改那一处。
+级别分三档：会话推进与状态变化是 `info`；定时器驱动的是 `debug`（GPS、播放进度）；帧率与
+触摸的是 `off`（视频与音频数据、全部触摸事件），连行都不生成。表里没有的消息记
+`service_type=0x…(UNKNOWN)`，那是漏登记；发送失败不看级别，一律 `error`。
+
+一条消息因此在日志里只出现一次：后端只记自己的判断（`session.idle_resend`、
+`session.version_mismatch`、`video.frame_rate_limited`），消息本身由 `msg.send` / `msg.recv`
+承担，不再逐个事件另打一行。
 
 ### 设备接入时机
 
@@ -324,7 +339,7 @@ unit`。身份上报在协议版本匹配时立即发出（真机抓包顺序如
 `MSG_CMD_STATISTIC_INFO` 中的渠道号判断车机是否合法，校验通过后才回 `MSG_CMD_MD_AUTHEN_RESULT`
 并启动车厂相关的定制服务；而手机的 `MSG_CMD_MD_FEATURE_CONFIG_REQUEST(0x00010051)` 只在
 「双方握手认证通过后」才发送。真机已验证这条链：渠道号合法后日志出现
-`session.feature_config_replied`，音频传输方式随之协商完成，音频不再零帧。
+`msg.send service_type=0x00018052(MSG_CMD_HU_FEATURE_CONFIG_RESPONSE)`，音频传输方式随之协商完成，音频不再零帧。
 
 CarLife Android app 侧的校验规则（逆向所得，`CARLIFE_AUTH.md` 2.2 节）为：去空白后非空、匹配
 `2(\d){7}`（`2` 加恰好 7 位数字），且不等于后装市场渠道 `20000000` 与预装市场渠道 `20000001`，

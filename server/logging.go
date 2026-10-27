@@ -93,7 +93,7 @@ var colourEnabled = func() bool {
 // is omitted for the few lines that belong to no subsystem.
 //
 // The event is a stable, lower-case, dotted name of the form <area>.<subject>_<outcome>
-// (session.version_confirmed, video.encoder_start_failed): it is what a search keys on, so it
+// (session.channels_ready, video.encoder_start_failed): it is what a search keys on, so it
 // outlives the fields around it. Fields carry the numbers, unit in the key (retry_ms,
 // rate_hz) and never in the value. The level says how bad it is, the event what happened;
 // prose belongs in neither.

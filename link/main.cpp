@@ -210,6 +210,694 @@ static std::string json_quote(const std::string& value)
     return out;
 }
 
+/* ------------------------------------------------------ CarLife message log
+ *
+ * One line per CarLife message, written where the message crosses the boundary instead of
+ * inside the handler that acts on it:
+ *
+ *   msg.send service_type=0x00018001(MSG_CMD_HU_PROTOCOL_VERSION) majorVersion=3 minorVersion=0
+ *   msg.recv service_type=0x00010026(MSG_CMD_MODULE_STATUS) modules=1 moduleID_0=3(music) statusID_0=0(idle)
+ *
+ * send is this head unit to the phone, recv is the phone to this head unit. The area is msg
+ * rather than cmd because one table covers all six channels the library carries:
+ * MSG_MEDIA_INIT sits on the media channel (0x00030001) and MSG_TOUCH_ACTION on the ctrl
+ * channel (0x00068001), so cmd would name two thirds of these lines wrong.
+ *
+ * The message is one field: the number the wire carries, its name in parentheses. An enum
+ * field is written the same way, so a line reads without the tables at hand. A value the
+ * tables do not cover keeps its own number and says (UNKNOWN) rather than borrowing the name
+ * of a neighbour, which is how a value added by a newer phone shows up. The names are the
+ * guide's and the vendor's (table 10.2-1 for the command channel, 10.3-2 for video, 10.4-2
+ * for media and navi tts, 10.5-2 for vr, 10.6-3 for touch, ModuleStatusModel.java for the
+ * module ids).
+ *
+ * A message whose row is missing from the table still produces a line, as
+ * service_type=0x…(UNKNOWN), so that a gap in the table shows up instead of a message that
+ * silently vanishes.
+ *
+ * The level in the table is the only place that decides whether a message is written: OFF
+ * drops it before the fields are built, which is how the frame rate and drag rate messages
+ * stay out of the log. A send that fails is written at error level whatever the message's
+ * own level is, because the caller is waiting for the reply that never comes.
+ *
+ * A call site passes the value, not a format string: msg_send(MSG_..., rc, version)
+ * formats through the formatter that the value's type resolves to. The field list therefore
+ * sits next to the message it describes, and a format string and its arguments cannot drift
+ * apart.
+ */
+
+typedef enum {
+    MSG_LOG_OFF,   /* not written: the message is at frame or drag rate */
+    MSG_LOG_DEBUG, /* written at debug level: driven by a timer */
+    MSG_LOG_INFO,
+} message_log_level;
+
+typedef struct message_spec {
+    uint32_t service_type;
+    const char* name;
+    message_log_level level;
+    /* Builds the field list of the line; NULL for a message without a body, and for a
+     * message whose row is OFF (its fields are never built). */
+    void (*format)(char* out, size_t size, const void* value);
+} message_spec;
+
+/* One row per message: identifier, service type, level, formatter. The identifier used at
+ * the call sites and the name the line carries both come from that row, so the number, the
+ * name and the level cannot disagree. Rows are ordered by service type.
+ *
+ * MSG_MEDIA_STOP and MSG_MEDIA_SEEK are not in the guide's media table; their numbers
+ * follow its numbering, which has 0x00030002 and 0x00030005 unassigned. The library has a
+ * callback for each, so the phone does send them. */
+#define CARLIFE_MESSAGES(X)                                                                        \
+    X(MSG_CMD_PROTOCOL_VERSION_MATCH_STATUS, 0x00010002, MSG_LOG_INFO, format_protocol_match)       \
+    X(MSG_CMD_MD_INFO, 0x00010004, MSG_LOG_INFO, format_md_info)                                   \
+    X(MSG_CMD_MD_BT_OOB_INFO, 0x00010006, MSG_LOG_INFO, format_bt_pair_info)                       \
+    X(MSG_CMD_VIDEO_ENCODER_INIT_DONE, 0x00010008, MSG_LOG_INFO, format_encoder_init)              \
+    X(MSG_CMD_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE, 0x0001000D, MSG_LOG_INFO, format_frame_rate)   \
+    X(MSG_CMD_TELE_STATE_CHANGE_INCOMING, 0x00010014, MSG_LOG_INFO, NULL)                          \
+    X(MSG_CMD_TELE_STATE_CHANGE_OUTGOING, 0x00010015, MSG_LOG_INFO, NULL)                          \
+    X(MSG_CMD_TELE_STATE_CHANGE_IDLE, 0x00010016, MSG_LOG_INFO, NULL)                              \
+    X(MSG_CMD_TELE_STATE_CHANGE_INCALLING, 0x00010017, MSG_LOG_INFO, NULL)                         \
+    X(MSG_CMD_SCREEN_ON, 0x00010018, MSG_LOG_INFO, NULL)                                           \
+    X(MSG_CMD_SCREEN_OFF, 0x00010019, MSG_LOG_INFO, NULL)                                          \
+    X(MSG_CMD_SCREEN_USERPRESENT, 0x0001001A, MSG_LOG_INFO, NULL)                                  \
+    X(MSG_CMD_FOREGROUND, 0x0001001B, MSG_LOG_INFO, NULL)                                          \
+    X(MSG_CMD_BACKGROUND, 0x0001001C, MSG_LOG_INFO, NULL)                                          \
+    X(MSG_CMD_GO_TO_DESKTOP, 0x00010021, MSG_LOG_INFO, NULL)                                       \
+    X(MSG_CMD_MIC_RECORD_WAKEUP_START, 0x00010022, MSG_LOG_INFO, NULL)                             \
+    X(MSG_CMD_MIC_RECORD_END, 0x00010023, MSG_LOG_INFO, NULL)                                      \
+    X(MSG_CMD_MIC_RECORD_RECOG_START, 0x00010024, MSG_LOG_INFO, NULL)                              \
+    X(MSG_CMD_MODULE_STATUS, 0x00010026, MSG_LOG_INFO, format_module_status)                       \
+    X(MSG_CMD_NAVI_NEXT_TURN_INFO, 0x00010030, MSG_LOG_INFO, format_navi_next_turn)                \
+    X(MSG_CMD_CAR_DATA_SUBSCRIBE, 0x00010031, MSG_LOG_INFO, format_vehicle_info_list)              \
+    X(MSG_CMD_CAR_DATA_SUBSCRIBE_START, 0x00010033, MSG_LOG_INFO, format_vehicle_info_list)        \
+    X(MSG_CMD_MEDIA_INFO, 0x00010035, MSG_LOG_INFO, format_media_info)                             \
+    X(MSG_CMD_MEDIA_PROGRESS_BAR, 0x00010036, MSG_LOG_DEBUG, format_media_progress)                \
+    X(MSG_CMD_CONNECT_EXCEPTION, 0x00010037, MSG_LOG_INFO, format_connect_exception)               \
+    X(MSG_CMD_MD_AUTHEN_RESPONSE, 0x00010049, MSG_LOG_INFO, format_authen_response)                \
+    X(MSG_CMD_MD_AUTHEN_RESULT, 0x0001004B, MSG_LOG_INFO, format_authen_result)                    \
+    X(MSG_CMD_MD_FEATURE_CONFIG_REQUEST, 0x00010051, MSG_LOG_INFO, NULL)                           \
+    X(MSG_CMD_MD_EXIT, 0x00010059, MSG_LOG_INFO, NULL)                                             \
+    X(MSG_CMD_HU_PROTOCOL_VERSION, 0x00018001, MSG_LOG_INFO, format_protocol_version)              \
+    X(MSG_CMD_HU_INFO, 0x00018003, MSG_LOG_INFO, format_hu_info)                                   \
+    X(MSG_CMD_VIDEO_ENCODER_INIT, 0x00018007, MSG_LOG_INFO, format_encoder_init)                   \
+    X(MSG_CMD_VIDEO_ENCODER_START, 0x00018009, MSG_LOG_INFO, NULL)                                 \
+    X(MSG_CMD_VIDEO_ENCODER_PAUSE, 0x0001800A, MSG_LOG_INFO, NULL)                                 \
+    X(MSG_CMD_VIDEO_ENCODER_RESET, 0x0001800B, MSG_LOG_INFO, NULL)                                 \
+    X(MSG_CMD_CAR_GPS, 0x00018010, MSG_LOG_DEBUG, format_gps)                                      \
+    X(MSG_CMD_LAUNCH_MODE_NORMAL, 0x0001801D, MSG_LOG_INFO, NULL)                                  \
+    X(MSG_CMD_LAUNCH_MODE_PHONE, 0x0001801E, MSG_LOG_INFO, NULL)                                   \
+    X(MSG_CMD_LAUNCH_MODE_MAP, 0x0001801F, MSG_LOG_INFO, NULL)                                     \
+    X(MSG_CMD_LAUNCH_MODE_MUSIC, 0x00018020, MSG_LOG_INFO, NULL)                                   \
+    X(MSG_CMD_GO_TO_FOREGROUND, 0x00018025, MSG_LOG_INFO, NULL)                                    \
+    X(MSG_CMD_STATISTIC_INFO, 0x00018027, MSG_LOG_INFO, format_statistic_info)                     \
+    X(MSG_CMD_CAR_DATA_SUBSCRIBE_DONE, 0x00018032, MSG_LOG_INFO, format_vehicle_info_list)         \
+    X(MSG_CMD_CAR_DATA_SUBSCRIBE_STOP, 0x00018034, MSG_LOG_INFO, format_vehicle_info_list)         \
+    X(MSG_CMD_HU_AUTHEN_REQUEST, 0x00018048, MSG_LOG_INFO, format_authen_request)                  \
+    X(MSG_CMD_HU_AUTHEN_RESULT, 0x0001804A, MSG_LOG_INFO, format_authen_result)                    \
+    X(MSG_CMD_HU_FEATURE_CONFIG_RESPONSE, 0x00018052, MSG_LOG_INFO, format_feature_config)         \
+    X(MSG_VIDEO_DATA, 0x00020001, MSG_LOG_OFF, format_data_chunk)                                  \
+    X(MSG_VIDEO_HEARTBEAT, 0x00020002, MSG_LOG_OFF, NULL)                                          \
+    X(MSG_MEDIA_INIT, 0x00030001, MSG_LOG_INFO, format_audio_init)                                 \
+    X(MSG_MEDIA_STOP, 0x00030002, MSG_LOG_INFO, NULL)                                              \
+    X(MSG_MEDIA_PAUSE, 0x00030003, MSG_LOG_INFO, NULL)                                             \
+    X(MSG_MEDIA_RESUME_PLAY, 0x00030004, MSG_LOG_INFO, NULL)                                       \
+    X(MSG_MEDIA_SEEK, 0x00030005, MSG_LOG_INFO, NULL)                                              \
+    X(MSG_MEDIA_DATA, 0x00030006, MSG_LOG_OFF, format_data_chunk)                                  \
+    X(MSG_NAVI_TTS_INIT, 0x00040001, MSG_LOG_INFO, format_audio_init)                              \
+    X(MSG_NAVI_TTS_END, 0x00040002, MSG_LOG_INFO, NULL)                                            \
+    X(MSG_NAVI_TTS_DATA, 0x00040003, MSG_LOG_OFF, format_data_chunk)                               \
+    X(MSG_VR_AUDIO_INIT, 0x00050002, MSG_LOG_INFO, format_audio_init)                              \
+    X(MSG_VR_AUDIO_DATA, 0x00050003, MSG_LOG_OFF, format_data_chunk)                               \
+    X(MSG_VR_AUDIO_STOP, 0x00050004, MSG_LOG_INFO, NULL)                                           \
+    X(MSG_TOUCH_ACTION, 0x00068001, MSG_LOG_OFF, NULL)                                             \
+    X(MSG_TOUCH_ACTION_DOWN, 0x00068002, MSG_LOG_OFF, NULL)                                        \
+    X(MSG_TOUCH_ACTION_UP, 0x00068003, MSG_LOG_OFF, NULL)                                          \
+    X(MSG_TOUCH_ACTION_MOVE, 0x00068004, MSG_LOG_OFF, NULL)                                        \
+    X(MSG_TOUCH_SINGLE_CLICK, 0x00068005, MSG_LOG_OFF, NULL)                                       \
+    X(MSG_TOUCH_DOUBLE_CLICK, 0x00068006, MSG_LOG_OFF, NULL)                                       \
+    X(MSG_TOUCH_LONG_PRESS, 0x00068007, MSG_LOG_OFF, NULL)                                         \
+    X(MSG_TOUCH_CAR_HARD_KEY_CODE, 0x00068008, MSG_LOG_INFO, format_hard_key)
+
+/* Defined with the helpers they belong to further down; two field lists name a value here. */
+static const char* hard_key_name(uint32_t keycode);
+static const char* media_play_mode_name(uint32_t mode);
+
+/* Builds the field list of a line. A formatter names fields and leaves the separators, the
+ * quoting and the bounds to this writer: fields are written as key=value separated by one
+ * space, so a line reads the same way as every other line in this log.
+ *
+ * A value that can contain spaces is quoted and escaped; numbers and the identifiers the
+ * guide names are written bare. A list repeats the field name with the entry's index
+ * appended (moduleID_0, moduleID_1), which keeps the entries apart without nesting and
+ * without a second level of punctuation.
+ *
+ * A list that does not fit is cut where it stops and the cut is marked with three dots, so
+ * a truncated line is not mistaken for a complete one. */
+struct field_writer {
+    field_writer(char* out, size_t size) : out_(out), size_(size), used_(0), truncated_(false)
+    {
+        out_[0] = '\0';
+    }
+
+    /* The formatter has finished writing, so a field list that ran out of room can be marked
+     * now; doing it on the way out keeps every formatter free of the bookkeeping. */
+    ~field_writer()
+    {
+        if (truncated_ && size_ >= 4) {
+            memcpy(out_ + size_ - 4, "...", 3);
+        }
+    }
+
+    void u32(const char* key, uint32_t value) { append("%s=%u", key, value); }
+    void i32(const char* key, int32_t value) { append("%s=%d", key, value); }
+    void u64(const char* key, uint64_t value) { append("%s=%llu", key, (unsigned long long)value); }
+    void boolean(const char* key, bool value) { append("%s=%s", key, value ? "true" : "false"); }
+    /* Text is quoted: a song title has spaces in it, and without the quotes the field after
+     * it could not be told apart from the title. The escape is the one json_quote applies,
+     * which is also what a reader of this log expects for an embedded quote or a newline. */
+    void text(const char* key, const std::string& value) { append("%s=%s", key, json_quote(value).c_str()); }
+    /* An enum: the number the wire carries, the name the tables give it in parentheses. The
+     * number stays because that is what a raw capture shows; the name because it is what
+     * makes the line readable. A value the tables do not cover says UNKNOWN. */
+    void enum_u32(const char* key, uint32_t value, const char* name)
+    {
+        append("%s=%u(%s)", key, value, name);
+    }
+
+    /* Key codes are the one enum whose values are only ever quoted in hex (table 10.6-1),
+     * so the number is written the way the table and the vendor sources write it. */
+    void enum_hex(const char* key, uint32_t value, const char* name)
+    {
+        append("%s=0x%08X(%s)", key, value, name);
+    }
+
+    /* The same field repeated once per entry of a list. */
+    void entry_u32(const char* key, unsigned index, uint32_t value) { append("%s_%u=%u", key, index, value); }
+
+    void entry_enum_u32(const char* key, unsigned index, uint32_t value, const char* name)
+    {
+        append("%s_%u=%u(%s)", key, index, value, name);
+    }
+
+    void entry_enum_i32(const char* key, unsigned index, int32_t value, const char* name)
+    {
+        append("%s_%u=%d(%s)", key, index, value, name);
+    }
+
+  private:
+    void append(const char* fmt, ...)
+    {
+        /* Two bytes are needed before formatting: the separator and one more character. */
+        if (truncated_ || used_ + 2 > size_) {
+            truncated_ = true;
+            return;
+        }
+        if (used_ > 0) {
+            out_[used_++] = ' ';
+            out_[used_] = '\0';
+        }
+        va_list args;
+        va_start(args, fmt);
+        int written = vsnprintf(out_ + used_, size_ - used_, fmt, args);
+        va_end(args);
+        if (written < 0) {
+            truncated_ = true;
+            return;
+        }
+        if ((size_t)written >= size_ - used_) {
+            truncated_ = true;
+            used_ = size_ - 1;
+            return;
+        }
+        used_ += (size_t)written;
+    }
+
+    char* out_;
+    size_t size_;
+    size_t used_;
+    bool truncated_;
+};
+
+/* A body this side does not parse (a PCM or video chunk): only its length is worth a line,
+ * and the message's level keeps even that out of the log unless it is turned on. */
+struct data_chunk {
+    uint32_t bytes;
+};
+
+static void format_protocol_version(char* out, size_t size, const void* value)
+{
+    const S_HU_PROTOCOL_VERSION* version = (const S_HU_PROTOCOL_VERSION*)value;
+    field_writer w(out, size);
+    w.u32("majorVersion", version->majorVersion);
+    w.u32("minorVersion", version->minorVersion);
+}
+
+static void format_protocol_match(char* out, size_t size, const void* value)
+{
+    const S_PROTOCOL_VERSION_MATCH_SATUS* status = (const S_PROTOCOL_VERSION_MATCH_SATUS*)value;
+    field_writer w(out, size);
+    w.u32("matchStatus", status->matchStatus);
+}
+
+/* MSG_CMD_HU_INFO and MSG_CMD_MD_INFO carry the same structure, and this head unit fills all
+ * of it, so both lines list all twenty-three fields rather than the six the guide lists for
+ * the head unit. An empty field is printed as an empty string: it states that the field is
+ * there and empty, which is not the same as a field that was left out. */
+template <typename T>
+static void format_device_fields(char* out, size_t size, const T& info)
+{
+    field_writer w(out, size);
+    w.text("os", info.os);
+    w.text("board", info.board);
+    w.text("bootloader", info.bootloader);
+    w.text("brand", info.brand);
+    w.text("cpu_abi", info.cpu_abi);
+    w.text("cpu_abi2", info.cpu_abi2);
+    w.text("device", info.device);
+    w.text("display", info.display);
+    w.text("fingerprint", info.fingerprint);
+    w.text("hardware", info.hardware);
+    w.text("host", info.host);
+    w.text("cid", info.cid);
+    w.text("manufacturer", info.manufacturer);
+    w.text("model", info.model);
+    w.text("product", info.product);
+    w.text("serial", info.serial);
+    w.text("codename", info.codename);
+    w.text("incremental", info.incremental);
+    w.text("release", info.release);
+    w.text("sdk", info.sdk);
+    w.u32("sdk_int", info.sdk_int);
+    w.text("token", info.token);
+    w.text("btaddress", info.btaddress);
+}
+
+static void format_hu_info(char* out, size_t size, const void* value)
+{
+    format_device_fields(out, size, *(const S_HU_INFO*)value);
+}
+
+static void format_md_info(char* out, size_t size, const void* value)
+{
+    format_device_fields(out, size, *(const S_MD_INFO*)value);
+}
+
+/* The guide names the first field address for HU->MD and btAddress for MD->HU; the
+ * structure only has address, and this is the MD->HU direction. */
+static void format_bt_pair_info(char* out, size_t size, const void* value)
+{
+    const S_BT_PAIR_INFO* info = (const S_BT_PAIR_INFO*)value;
+    field_writer w(out, size);
+    w.text("btAddress", info->address);
+    w.text("passKey", info->passKey);
+    w.text("hash", info->hash);
+    w.text("randomizer", info->randomizer);
+    w.text("uuid", info->uuid);
+    w.text("name", info->name);
+    w.u32("status", info->status);
+}
+
+/* MSG_CMD_VIDEO_ENCODER_INIT and its _DONE reply carry the same three fields, in structures
+ * that are separate types with the same layout. */
+static void format_encoder_init(char* out, size_t size, const void* value)
+{
+    const S_VIDEO_ENCODER_INIT* init = (const S_VIDEO_ENCODER_INIT*)value;
+    field_writer w(out, size);
+    w.u32("width", init->width);
+    w.u32("height", init->height);
+    w.u32("frameRate", init->frameRate);
+}
+
+static void format_frame_rate(char* out, size_t size, const void* value)
+{
+    const S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE* change =
+        (const S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE*)value;
+    field_writer w(out, size);
+    w.u32("frameRate", change->frameRate);
+}
+
+/* Module ids, from ModuleStatusModel.java of the CarLife vehicle library. The names are the
+ * short ones the phone uses for itself in the modules it reports. */
+static const char* module_name(uint32_t module_id)
+{
+    switch (module_id) {
+    case 1: return "phone";
+    case 2: return "navi";
+    case 3: return "music";
+    case 4: return "voice";
+    case 5: return "connect";
+    case 6: return "mic";
+    default: return "UNKNOWN";
+    }
+}
+
+/* The status a module reports, named per module: the same number means something different
+ * in each, so the name needs both. music is the one that matters for audio - it reports
+ * running only while the phone is streaming program audio, so an idle music module means no
+ * audio channel traffic is coming. */
+static const char* module_status_name(uint32_t module_id, uint32_t status_id)
+{
+    static const char* const kPhone[] = {"idle", "incoming", "outgoing"};
+    static const char* const kNavi[] = {"idle", "start", "stop"};
+    static const char* const kMusic[] = {"idle", "running"};
+    static const char* const kVoice[] = {"idle", "running", "mic-unsupported"};
+    static const char* const kMic[] = {"vehicle-mic", "phone-mic", "unsupported"};
+    const char* const* names = NULL;
+    size_t count = 0;
+    switch (module_id) {
+    case 1: names = kPhone; count = sizeof(kPhone) / sizeof(kPhone[0]); break;
+    case 2: names = kNavi; count = sizeof(kNavi) / sizeof(kNavi[0]); break;
+    case 3: names = kMusic; count = sizeof(kMusic) / sizeof(kMusic[0]); break;
+    case 4: names = kVoice; count = sizeof(kVoice) / sizeof(kVoice[0]); break;
+    case 6: names = kMic; count = sizeof(kMic) / sizeof(kMic[0]); break;
+    }
+    if (names == NULL || status_id >= count) {
+        return "UNKNOWN";
+    }
+    return names[status_id];
+}
+
+/* The module list is a chain; the count comes first so that a line cut short still says how
+ * many entries it was supposed to carry. */
+static void format_module_status(char* out, size_t size, const void* value)
+{
+    const S_MODULE_STATUS_LIST_MOBILE* list = (const S_MODULE_STATUS_LIST_MOBILE*)value;
+    field_writer w(out, size);
+    w.u32("modules", (uint32_t)list->cnt);
+    unsigned i = 0;
+    for (const S_MODULE_STATUS_MOBILE* node = list->moduleStatus; node != NULL && i < (unsigned)list->cnt;
+         node = node->next, ++i) {
+        w.entry_enum_u32("moduleID", i, node->moduleID, module_name(node->moduleID));
+        w.entry_enum_u32("statusID", i, node->statusID,
+                         module_status_name(node->moduleID, node->statusID));
+    }
+}
+
+static void format_navi_next_turn(char* out, size_t size, const void* value)
+{
+    const S_NAVI_NEXT_TURN_INFO* info = (const S_NAVI_NEXT_TURN_INFO*)value;
+    field_writer w(out, size);
+    w.u32("action", info->action);
+    w.u32("nextTurn", info->nextTurn);
+    w.text("roadName", info->roadName);
+    w.u32("totalDistance", info->totalDistance);
+    w.u32("remainDistance", info->remainDistance);
+    w.u32("time", info->time);
+}
+
+/* The vehicle data list, in all three directions it appears: the request the phone sends,
+ * the reply this side sends, and the start/stop that follow. The structure calls the second
+ * field flag; the guide calls it supportFlag and gives it the coordinate format, 1 for WGS84
+ * and 2 for GCJ-02. */
+static const char* coordinate_format_name(int32_t flag)
+{
+    switch (flag) {
+    case 1: return "WGS84";
+    case 2: return "GCJ-02";
+    default: return "UNKNOWN";
+    }
+}
+
+/* The vehicle data channel numbers its modules in a set of its own, not the one the module
+ * status messages use: 0 is the position, which is the only module this head unit declares
+ * (kCarDataGps below). Any other id is left unnamed rather than read against that other
+ * table. */
+static const char* vehicle_module_name(uint32_t module_id)
+{
+    return module_id == 0 ? "GPS" : "UNKNOWN";
+}
+
+static void format_vehicle_info_list(char* out, size_t size, const void* value)
+{
+    const S_VEHICLE_INFO_LIST* list = (const S_VEHICLE_INFO_LIST*)value;
+    field_writer w(out, size);
+    w.u32("modules", (uint32_t)list->cnt);
+    unsigned i = 0;
+    for (const S_VEHICLE_INFO* info = list->pVehicleInfo;
+         info != NULL && i < (unsigned)list->cnt; info = info->pNext, ++i) {
+        w.entry_enum_u32("moduleID", i, info->moduleID, vehicle_module_name(info->moduleID));
+        w.entry_enum_i32("supportFlag", i, info->flag, coordinate_format_name(info->flag));
+        w.entry_u32("frequency", i, info->frequency);
+    }
+}
+
+/* albumArt is the cover bitmap, not text: the field carries its length in bytes, which is
+ * enough to tell a missing cover from a present one. */
+static void format_media_info(char* out, size_t size, const void* value)
+{
+    const S_MEDIA_INFO* info = (const S_MEDIA_INFO*)value;
+    field_writer w(out, size);
+    w.text("source", info->source);
+    w.text("song", info->song);
+    w.text("artist", info->artist);
+    w.text("album", info->album);
+    w.u32("albumArt_bytes", (uint32_t)info->albumArt.size());
+    w.u32("duration", info->duration);
+    w.u32("playlistNum", info->playlistNum);
+    w.text("songId", info->songId);
+    w.enum_u32("mode", info->mode, media_play_mode_name(info->mode));
+}
+
+static void format_media_progress(char* out, size_t size, const void* value)
+{
+    const S_MEDIA_PROGRESS_BAR* progress = (const S_MEDIA_PROGRESS_BAR*)value;
+    field_writer w(out, size);
+    w.u32("progressBar", progress->progressBar);
+}
+
+static void format_connect_exception(char* out, size_t size, const void* value)
+{
+    const S_CONNECTION_EXCEPTION* exception = (const S_CONNECTION_EXCEPTION*)value;
+    field_writer w(out, size);
+    w.u32("exceptionType", exception->exceptionType);
+}
+
+static void format_authen_request(char* out, size_t size, const void* value)
+{
+    const S_AUTHEN_REQUEST* request = (const S_AUTHEN_REQUEST*)value;
+    field_writer w(out, size);
+    w.text("randomValue", request->randomValue);
+}
+
+static void format_authen_response(char* out, size_t size, const void* value)
+{
+    const S_AUTHEN_RESPONSE* response = (const S_AUTHEN_RESPONSE*)value;
+    field_writer w(out, size);
+    w.text("encryptValue", response->encryptValue);
+}
+
+/* The guide writes the field of MSG_CMD_HU_AUTHEN_RESULT as result, while the structure and
+ * the serialized message both call it authenResult. The line uses authenResult, so it
+ * matches what is on the wire. */
+static void format_authen_result(char* out, size_t size, const void* value)
+{
+    const S_HU_AUTHEN_RESULT* result = (const S_HU_AUTHEN_RESULT*)value;
+    field_writer w(out, size);
+    w.boolean("authenResult", result->authenResult);
+}
+
+/* The list is a chain of count entries, and the keys are the customization names of the
+ * guide's list 10.2-2, so the fields read as that table. */
+static void format_feature_config(char* out, size_t size, const void* value)
+{
+    const S_FEATURE_CONFIG_LIST* list = (const S_FEATURE_CONFIG_LIST*)value;
+    field_writer w(out, size);
+    w.u32("features", (uint32_t)list->cnt);
+    unsigned i = 0;
+    for (const S_FEATURE_CONFIG* item = list->pFeatureConfig; item != NULL && i < (unsigned)list->cnt;
+         item = item->pNext, ++i) {
+        w.u32(item->key.c_str(), item->value);
+    }
+}
+
+/* Of the twenty-five fields of MSG_CMD_CAR_GPS this head unit only has a source for these
+ * seven; the rest (signal quality, satellite counts, the DOPs, the per-axis speeds) are sent
+ * as zero and would only make the line longer. The values are the wire values: latitude and
+ * longitude in 1/1,000,000 degrees, height in 0.1 m, speed in 0.01 km/h, heading in 0.1
+ * degrees. antennaState is unsigned on the wire and -1 means there is no fix. */
+static void format_gps(char* out, size_t size, const void* value)
+{
+    const S_CAR_GPS* gps = (const S_CAR_GPS*)value;
+    field_writer w(out, size);
+    w.i32("antennaState", (int32_t)gps->antennaState);
+    w.u32("latitude", gps->latitude);
+    w.u32("longitude", gps->longitude);
+    w.u32("height", gps->height);
+    w.u32("speed", gps->speed);
+    w.u32("heading", gps->heading);
+    w.u64("timeStamp", gps->timeStamp);
+}
+
+static void format_statistic_info(char* out, size_t size, const void* value)
+{
+    const S_STATISTICS_INFO* info = (const S_STATISTICS_INFO*)value;
+    field_writer w(out, size);
+    w.text("cuid", info->cuid);
+    w.text("versionName", info->versionName);
+    w.u32("versionCode", info->versionCode);
+    w.text("channel", info->channel);
+    w.u32("connectCount", info->connectCount);
+    w.u32("connectSuccessCount", info->connectSuccessCount);
+    w.u32("connectTime", info->connectTime);
+    w.text("crashLog", info->crashLog);
+}
+
+static void format_data_chunk(char* out, size_t size, const void* value)
+{
+    const data_chunk* chunk = (const data_chunk*)value;
+    field_writer w(out, size);
+    w.u32("bytes", chunk->bytes);
+}
+
+/* media, navi tts and vr each send the same initialization: rate, channel layout and sample
+ * format, in one structure. */
+static void format_audio_init(char* out, size_t size, const void* value)
+{
+    const S_AUDIO_INIT_PARAMETER* param = (const S_AUDIO_INIT_PARAMETER*)value;
+    field_writer w(out, size);
+    w.u32("sampleRate", param->sampleRate);
+    w.u32("channelConfig", param->channelConfig);
+    w.u32("sampleFormat", param->sampleFormat);
+}
+
+static void format_hard_key(char* out, size_t size, const void* value)
+{
+    const S_TOUCH_CAR_HARD_KEY_CODE* key = (const S_TOUCH_CAR_HARD_KEY_CODE*)value;
+    field_writer w(out, size);
+    w.enum_hex("keycode", key->keycode, hard_key_name(key->keycode));
+}
+
+/* The identifiers below are what the call sites use, and the table rows above give them
+ * their values: a message is named, numbered and levelled in exactly one place. */
+enum {
+#define CARLIFE_MESSAGE_ID(name, service_type, level, format) name = service_type,
+    CARLIFE_MESSAGES(CARLIFE_MESSAGE_ID)
+#undef CARLIFE_MESSAGE_ID
+};
+
+static const message_spec kMessageTable[] = {
+#define CARLIFE_MESSAGE_ROW(name, service_type, level, format) {service_type, #name, level, format},
+    CARLIFE_MESSAGES(CARLIFE_MESSAGE_ROW)
+#undef CARLIFE_MESSAGE_ROW
+};
+
+/* Long enough for MSG_CMD_MD_INFO, the longest field list here: twenty-three fields, of which
+ * the phone fills twenty. */
+#define LOG_FIELDS_MAX 1536
+
+static const message_spec* find_message(uint32_t service_type)
+{
+    for (size_t i = 0; i < sizeof(kMessageTable) / sizeof(kMessageTable[0]); ++i) {
+        if (kMessageTable[i].service_type == service_type) {
+            return &kMessageTable[i];
+        }
+    }
+    return NULL;
+}
+
+/* A message this file handles but the table does not list. Written rather than dropped: the
+ * row is what carries the level and the formatter, so a missing row would otherwise take
+ * the message out of the log without leaving a trace. */
+static void log_unlisted_message(const char* direction, uint32_t service_type)
+{
+    log_line_warn("msg.%s service_type=0x%08X(UNKNOWN)", direction, service_type);
+}
+
+static void write_message_line(const message_spec* spec, const char* direction, int rc,
+                               const char* fields)
+{
+    /* The fields follow the service type directly; a message without a body ends there. A
+     * failed send brings rc forward, so that the reason it is an error line comes before the
+     * body it never delivered. */
+    const char* gap = fields[0] != '\0' ? " " : "";
+    if (rc < 0) {
+        log_line_error("msg.%s service_type=0x%08X(%s) rc=%d%s%s", direction, spec->service_type,
+                       spec->name, rc, gap, fields);
+    } else if (spec->level == MSG_LOG_DEBUG) {
+        log_line_debug("msg.%s service_type=0x%08X(%s)%s%s", direction, spec->service_type,
+                       spec->name, gap, fields);
+    } else if (spec->level == MSG_LOG_INFO) {
+        log_line("msg.%s service_type=0x%08X(%s)%s%s", direction, spec->service_type, spec->name,
+                 gap, fields);
+    }
+}
+
+static void msg_recv(uint32_t service_type)
+{
+    const message_spec* spec = find_message(service_type);
+    if (spec == NULL) {
+        log_unlisted_message("recv", service_type);
+        return;
+    }
+    write_message_line(spec, "recv", 0, "");
+}
+
+static void msg_send(uint32_t service_type, int rc)
+{
+    const message_spec* spec = find_message(service_type);
+    if (spec == NULL) {
+        log_unlisted_message("send", service_type);
+        return;
+    }
+    write_message_line(spec, "send", rc, "");
+}
+
+template <typename T>
+static void msg_recv(uint32_t service_type, const T& value)
+{
+    const message_spec* spec = find_message(service_type);
+    if (spec == NULL) {
+        log_unlisted_message("recv", service_type);
+        return;
+    }
+    if (spec->level == MSG_LOG_OFF) {
+        return;
+    }
+    char fields[LOG_FIELDS_MAX];
+    if (spec->format != NULL) {
+        spec->format(fields, sizeof(fields), &value);
+    } else {
+        fields[0] = '\0';
+    }
+    write_message_line(spec, "recv", 0, fields);
+}
+
+template <typename T>
+static void msg_send(uint32_t service_type, int rc, const T& value)
+{
+    const message_spec* spec = find_message(service_type);
+    if (spec == NULL) {
+        log_unlisted_message("send", service_type);
+        return;
+    }
+    /* A failed send is written whatever the level is: the caller is waiting for a reply
+     * that will not come, and the level of a successful message says nothing about that. */
+    if (rc >= 0 && spec->level == MSG_LOG_OFF) {
+        return;
+    }
+    char fields[LOG_FIELDS_MAX];
+    if (spec->format != NULL) {
+        spec->format(fields, sizeof(fields), &value);
+    } else {
+        fields[0] = '\0';
+    }
+    write_message_line(spec, "send", rc, fields);
+}
+
+/* Sends one message under the command write lock and records it. Every command channel write
+ * needs that lock (see g_cmd_write_lock), so taking it here leaves a call site with nothing
+ * to do but name the message and pass the value. */
+#define SEND_MESSAGE(message, call, ...)                                                           \
+    do {                                                                                           \
+        int rc_;                                                                                   \
+        {                                                                                          \
+            CmdWriteLock lock_;                                                                    \
+            rc_ = (call);                                                                          \
+        }                                                                                          \
+        msg_send(message, rc_, ##__VA_ARGS__);                                                 \
+    } while (0)
+
 /* ---------------------------------------------------------- Socket output */
 
 /* Children must never inherit our descriptors. The library runs commands through
@@ -278,6 +966,7 @@ static void broadcast_status(void)
 
 static void cb_protocol_match(S_PROTOCOL_VERSION_MATCH_SATUS* status)
 {
+    msg_recv(MSG_CMD_PROTOCOL_VERSION_MATCH_STATUS, *status);
     uint8_t buffer[4];
     put_be32(buffer, status->matchStatus);
     send_frame(CH_CMD, EV_PROTOCOL_MATCH, buffer, sizeof(buffer));
@@ -285,6 +974,8 @@ static void cb_protocol_match(S_PROTOCOL_VERSION_MATCH_SATUS* status)
 
 static void cb_md_info(S_MD_INFO* info)
 {
+    msg_recv(MSG_CMD_MD_INFO, *info);
+
     std::string json = "{";
 #define STR_FIELD(name)                       \
     json += "\"" #name "\":";                 \
@@ -321,7 +1012,7 @@ static void cb_md_info(S_MD_INFO* info)
 
 static void cb_md_bt_pair_info(S_BT_PAIR_INFO* info)
 {
-    log_line("phone.bluetooth_pairing name=\"%s\" status=%u", info->name.c_str(), info->status);
+    msg_recv(MSG_CMD_MD_BT_OOB_INFO, *info);
 }
 
 static void cb_video_encoder_init_done(S_VIDEO_ENCODER_INIT_DONE* info)
@@ -331,8 +1022,7 @@ static void cb_video_encoder_init_done(S_VIDEO_ENCODER_INIT_DONE* info)
     put_be32(buffer + 4, info->height);
     put_be32(buffer + 8, info->frameRate);
     send_frame(CH_CMD, EV_VIDEO_INIT_DONE, buffer, sizeof(buffer));
-    log_line_debug("video.encoder_ready width=%u height=%u fps=%u", info->width, info->height,
-                   info->frameRate);
+    msg_recv(MSG_CMD_VIDEO_ENCODER_INIT_DONE, *info);
 }
 
 static void cb_video_frame_rate_done(S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE* info)
@@ -340,7 +1030,7 @@ static void cb_video_frame_rate_done(S_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE* inf
     uint8_t buffer[4];
     put_be32(buffer, info->frameRate);
     send_frame(CH_CMD, EV_VIDEO_FPS_DONE, buffer, sizeof(buffer));
-    log_line("video.frame_rate_changed fps=%u", info->frameRate);
+    msg_recv(MSG_CMD_VIDEO_ENCODER_FRAME_RATE_CHANGE_DONE, *info);
 }
 
 static void cb_tele_state(uint8_t state)
@@ -350,96 +1040,86 @@ static void cb_tele_state(uint8_t state)
 
 static void cb_tele_incoming(void)
 {
+    msg_recv(MSG_CMD_TELE_STATE_CHANGE_INCOMING);
     cb_tele_state(1);
 }
 static void cb_tele_outgoing(void)
 {
+    msg_recv(MSG_CMD_TELE_STATE_CHANGE_OUTGOING);
     cb_tele_state(2);
 }
 static void cb_tele_idle(void)
 {
+    msg_recv(MSG_CMD_TELE_STATE_CHANGE_IDLE);
     cb_tele_state(0);
 }
 static void cb_tele_in_calling(void)
 {
+    msg_recv(MSG_CMD_TELE_STATE_CHANGE_INCALLING);
     cb_tele_state(3);
 }
 
 static void cb_screen_on(void)
 {
     send_frame(CH_CMD, EV_SCREEN_ON, NULL, 0);
-    log_line_debug("phone.screen state=on");
+    msg_recv(MSG_CMD_SCREEN_ON);
 }
 
 static void cb_screen_off(void)
 {
     send_frame(CH_CMD, EV_SCREEN_OFF, NULL, 0);
-    log_line_debug("phone.screen state=off");
+    msg_recv(MSG_CMD_SCREEN_OFF);
 }
 
 static void cb_screen_user_present(void)
 {
-    log_line("phone.user_present");
+    msg_recv(MSG_CMD_SCREEN_USERPRESENT);
 }
 
 static void cb_foreground(void)
 {
     send_frame(CH_CMD, EV_FOREGROUND, NULL, 0);
-    log_line_debug("phone.app_state state=foreground");
+    msg_recv(MSG_CMD_FOREGROUND);
 }
 
 static void cb_background(void)
 {
     send_frame(CH_CMD, EV_BACKGROUND, NULL, 0);
-    log_line_debug("phone.app_state state=background");
+    msg_recv(MSG_CMD_BACKGROUND);
 }
 
 static void cb_go_to_desktop(void)
 {
     send_frame(CH_CMD, EV_GO_TO_DESKTOP, NULL, 0);
-    log_line_debug("phone.app_state state=home");
+    msg_recv(MSG_CMD_GO_TO_DESKTOP);
 }
 
 static void cb_mic_wakeup(void)
 {
     send_frame(CH_CMD, EV_MIC_WAKEUP, NULL, 0);
-    log_line_debug("voice.wakeup");
+    msg_recv(MSG_CMD_MIC_RECORD_WAKEUP_START);
 }
 
 static void cb_mic_end(void)
 {
     send_frame(CH_CMD, EV_MIC_END, NULL, 0);
-    log_line_debug("voice.record_stopped");
+    msg_recv(MSG_CMD_MIC_RECORD_END);
 }
 
 static void cb_mic_recog(void)
 {
     send_frame(CH_CMD, EV_MIC_RECOG, NULL, 0);
-    log_line_debug("voice.recognition_started");
+    msg_recv(MSG_CMD_MIC_RECORD_RECOG_START);
 }
 
 static void cb_module_status(S_MODULE_STATUS_LIST_MOBILE* list)
 {
-    std::string json = "[";
-    S_MODULE_STATUS_MOBILE* node = list->moduleStatus;
-    for (u32 i = 0; node != NULL && i < list->cnt; ++i, node = node->next) {
-        if (i != 0) {
-            json += ",";
-        }
-        json += "{\"moduleID\":";
-        json += std::to_string(node->moduleID);
-        json += ",\"statusID\":";
-        json += std::to_string(node->statusID);
-        json += "}";
-    }
-    json += "]";
-    send_text(EV_MODULE_STATUS, json);
+    msg_recv(MSG_CMD_MODULE_STATUS, *list);
 }
 
 static void cb_navi_next_turn(S_NAVI_NEXT_TURN_INFO* info)
 {
-    log_line("navi.turn_prompt action=%u next_turn=%u road=\"%s\"", info->action, info->nextTurn,
-             info->roadName.c_str());
+    msg_recv(MSG_CMD_NAVI_NEXT_TURN_INFO, *info);
 }
 
 /* ------------------------------------------------------- Head unit identity
@@ -472,13 +1152,7 @@ static void send_statistic_info(void)
     info.connectTime = 0; /* the units of this counter are not documented */
     info.crashLog = "";
 
-    CmdWriteLock lock;
-    if (CCarLifeLib::getInstance()->cmdStatisticInfo(&info) < 0) {
-        log_line_error("session.statistic_info_send_failed");
-        return;
-    }
-    log_line("session.statistic_info_sent channel=%s cuid=%s", info.channel.c_str(),
-             info.cuid.c_str());
+    SEND_MESSAGE(MSG_CMD_STATISTIC_INFO, CCarLifeLib::getInstance()->cmdStatisticInfo(&info), info);
 }
 
 static void send_hu_info(void)
@@ -514,13 +1188,7 @@ static void send_hu_info(void)
     info.token = ""; /* issued by Baidu together with the channel number */
     info.btaddress = "";
 
-    CmdWriteLock lock;
-    if (CCarLifeLib::getInstance()->cmdHUInfro(&info) < 0) {
-        log_line_error("session.hu_info_send_failed");
-        return;
-    }
-    log_line("session.hu_info_sent model=%s host=%s release=%s", info.model.c_str(),
-             info.host.c_str(), info.release.c_str());
+    SEND_MESSAGE(MSG_CMD_HU_INFO, CCarLifeLib::getInstance()->cmdHUInfro(&info), info);
 }
 
 /* ------------------------------------------------------- Head unit authentication
@@ -573,16 +1241,14 @@ static void send_authen_request(void)
     g_authen_random = request.randomValue;
     pthread_mutex_unlock(&g_authen_lock);
 
-    CmdWriteLock lock;
-    if (CCarLifeLib::getInstance()->cmdHuAuthenRequest(&request) < 0) {
-        log_line_error("auth.request_send_failed");
-        return;
-    }
-    log_line("auth.request_sent value=%s", request.randomValue.c_str());
+    SEND_MESSAGE(MSG_CMD_HU_AUTHEN_REQUEST,
+                 CCarLifeLib::getInstance()->cmdHuAuthenRequest(&request), request);
 }
 
 static void cb_md_authen_response(S_AUTHEN_RESPONSE* response)
 {
+    msg_recv(MSG_CMD_MD_AUTHEN_RESPONSE, *response);
+
     pthread_mutex_lock(&g_authen_lock);
     std::string expected = g_authen_random;
     pthread_mutex_unlock(&g_authen_lock);
@@ -608,17 +1274,14 @@ static void cb_md_authen_response(S_AUTHEN_RESPONSE* response)
 
     S_HU_AUTHEN_RESULT result;
     result.authenResult = verified;
-    CmdWriteLock lock;
-    if (CCarLifeLib::getInstance()->cmdHuAuthenResult(&result) < 0) {
-        log_line_error("auth.result_send_failed");
-    }
+    SEND_MESSAGE(MSG_CMD_HU_AUTHEN_RESULT, CCarLifeLib::getInstance()->cmdHuAuthenResult(&result),
+                 result);
 }
 
 static void cb_md_authen_result(S_MD_AUTHEN_RESULT* result)
 {
     g_authen_result = result->authenResult ? 1 : 0;
-    log_line_debug("auth.result_received result=%s",
-                   result->authenResult ? "authenticated" : "rejected");
+    msg_recv(MSG_CMD_MD_AUTHEN_RESULT, *result);
     send_frame(CH_CMD, EV_AUTHEN_RESULT, &g_authen_result, 1);
 }
 
@@ -636,6 +1299,8 @@ static S_FEATURE_CONFIG g_feature_config[9];
 
 static void cb_feature_config_request(void)
 {
+    msg_recv(MSG_CMD_MD_FEATURE_CONFIG_REQUEST);
+
     static const struct {
         const char* key;
         uint32_t value;
@@ -659,12 +1324,11 @@ static void cb_feature_config_request(void)
     }
     g_feature_config_list.cnt = (u32)count;
     g_feature_config_list.pFeatureConfig = &g_feature_config[0];
-    CmdWriteLock lock;
-    CCarLifeLib::getInstance()->cmdFeatureConfigResponse(&g_feature_config_list);
+    SEND_MESSAGE(MSG_CMD_HU_FEATURE_CONFIG_RESPONSE,
+                 CCarLifeLib::getInstance()->cmdFeatureConfigResponse(&g_feature_config_list),
+                 g_feature_config_list);
 
     send_frame(CH_CMD, EV_FEATURE_CONFIG_REQUEST, NULL, 0);
-    log_line_debug("session.feature_config_replied keys=%d audio=dedicated_channel encryption=none",
-             count);
 }
 
 /* Names for the play modes, CarlifeMediaPlayMode in guide 13.2 (table 13.2-2). The
@@ -676,41 +1340,34 @@ static const char* media_play_mode_name(uint32_t mode)
     case 0: return "PLAYMODE_REPEATE_ONE";
     case 1: return "PLAYMODE_SHUFFLE";
     case 2: return "PLAYMODE_REPEATE_ALL";
-    default: return "unknown";
+    default: return "UNKNOWN";
     }
 }
 
 /* What the phone's media player is doing, reported on the command channel: the track
  * whenever it changes and the position once a second while it plays. Neither drives
  * anything, but they are the only way to tell whether the phone's music module is really
- * running - which is what decides whether the audio channel carries anything at all.
- *
- * All fields of MSG_CMD_MEDIA_INFO (guide 13.2) are logged, under the names the structure
- * uses, as key=value: strings are quoted so that a title with spaces stays readable.
- * albumArt is a bitmap, so only its size is printed, in kB. */
+ * running - which is what decides whether the audio channel carries anything at all. The
+ * fields of MSG_CMD_MEDIA_INFO (guide 13.2) are listed in format_media_info. */
 static void cb_media_info(S_MEDIA_INFO* info)
 {
-    log_line_debug("media.info source=\"%s\" song=\"%s\" artist=\"%s\" album=\"%s\" art_kb=%.1f "
-             "duration_s=%u playlist=%u song_id=\"%s\" mode=%s mode_id=%u",
-             info->source.c_str(), info->song.c_str(), info->artist.c_str(), info->album.c_str(),
-             (double)info->albumArt.size() / 1024.0, info->duration, info->playlistNum,
-             info->songId.c_str(), media_play_mode_name(info->mode), info->mode);
+    msg_recv(MSG_CMD_MEDIA_INFO, *info);
 }
 
 static void cb_media_progress_bar(S_MEDIA_PROGRESS_BAR* progress)
 {
-    log_line_debug("media.progress pos_ms=%u", progress->progressBar);
+    msg_recv(MSG_CMD_MEDIA_PROGRESS_BAR, *progress);
 }
 
 static void cb_connect_exception(S_CONNECTION_EXCEPTION* exception)
 {
-    log_line_warn("phone.connection_exception type=%u", exception->exceptionType);
+    msg_recv(MSG_CMD_CONNECT_EXCEPTION, *exception);
 }
 
 static void cb_md_exit(void)
 {
     send_frame(CH_CMD, EV_MD_EXIT, NULL, 0);
-    log_line_debug("phone.app_exited");
+    msg_recv(MSG_CMD_MD_EXIT);
 }
 
 /* ------------------------------------------------------- Audio/video channels */
@@ -722,69 +1379,81 @@ static void send_audio_init(uint8_t channel, S_AUDIO_INIT_PARAMETER* param)
     put_be32(buffer + 4, param->channelConfig);
     put_be32(buffer + 8, param->sampleFormat);
     send_frame(channel, EV_AUDIO_INIT, buffer, sizeof(buffer));
-    log_line_debug("audio.channel_ready ch=%u rate_hz=%u channel_config=%u sample_format=%u",
-             channel, param->sampleRate, param->channelConfig, param->sampleFormat);
 }
 
 static void cb_video_data(u8* data, u32 length)
 {
     send_frame(CH_VIDEO, EV_VIDEO_DATA, data, length);
+    msg_recv(MSG_VIDEO_DATA, data_chunk{length});
 }
 
 static void cb_video_heartbeat(void)
 {
     send_frame(CH_VIDEO, EV_VIDEO_HEARTBEAT, NULL, 0);
+    msg_recv(MSG_VIDEO_HEARTBEAT);
 }
 
 static void cb_media_init(S_AUDIO_INIT_PARAMETER* param)
 {
+    msg_recv(MSG_MEDIA_INIT, *param);
     send_audio_init(CH_AUDIO, param);
 }
 static void cb_media_data(u8* data, u32 length)
 {
     send_frame(CH_AUDIO, EV_AUDIO_DATA, data, length);
+    msg_recv(MSG_MEDIA_DATA, data_chunk{length});
 }
 static void cb_media_stop(void)
 {
     send_frame(CH_AUDIO, EV_AUDIO_STOP, NULL, 0);
+    msg_recv(MSG_MEDIA_STOP);
 }
 static void cb_media_pause(void)
 {
     send_frame(CH_AUDIO, EV_AUDIO_PAUSE, NULL, 0);
+    msg_recv(MSG_MEDIA_PAUSE);
 }
 static void cb_media_resume(void)
 {
     send_frame(CH_AUDIO, EV_AUDIO_RESUME, NULL, 0);
+    msg_recv(MSG_MEDIA_RESUME_PLAY);
 }
 static void cb_media_seek(void)
 {
     send_frame(CH_AUDIO, EV_AUDIO_SEEK, NULL, 0);
+    msg_recv(MSG_MEDIA_SEEK);
 }
 
 static void cb_tts_init(S_AUDIO_INIT_PARAMETER* param)
 {
+    msg_recv(MSG_NAVI_TTS_INIT, *param);
     send_audio_init(CH_TTS, param);
 }
 static void cb_tts_data(u8* data, u32 length)
 {
     send_frame(CH_TTS, EV_AUDIO_DATA, data, length);
+    msg_recv(MSG_NAVI_TTS_DATA, data_chunk{length});
 }
 static void cb_tts_stop(void)
 {
     send_frame(CH_TTS, EV_AUDIO_STOP, NULL, 0);
+    msg_recv(MSG_NAVI_TTS_END);
 }
 
 static void cb_vr_init(S_AUDIO_INIT_PARAMETER* param)
 {
+    msg_recv(MSG_VR_AUDIO_INIT, *param);
     send_audio_init(CH_VR, param);
 }
 static void cb_vr_data(u8* data, u32 length)
 {
     send_frame(CH_VR, EV_AUDIO_DATA, data, length);
+    msg_recv(MSG_VR_AUDIO_DATA, data_chunk{length});
 }
 static void cb_vr_stop(void)
 {
     send_frame(CH_VR, EV_AUDIO_STOP, NULL, 0);
+    msg_recv(MSG_VR_AUDIO_STOP);
 }
 
 /* ------------------------------------------------------ Vehicle data: position
@@ -870,6 +1539,8 @@ static const char* authorization_state(int value)
 
 static void cb_car_data_subscribe(S_VEHICLE_INFO_LIST* list)
 {
+    msg_recv(MSG_CMD_CAR_DATA_SUBSCRIBE, *list);
+
     /* Support is declared whether or not a fix is available yet. The phone sends this once
      * per session, a second or two after the link starts, when the Location Services
      * prompt may still be open; answering "no GPS" here would leave the session without
@@ -885,21 +1556,14 @@ static void cb_car_data_subscribe(S_VEHICLE_INFO_LIST* list)
     reply.cnt = 1;
     reply.pVehicleInfo = &gps_info;
 
-    {
-        CmdWriteLock lock;
-        if (CCarLifeLib::getInstance()->cmdCarDataSubscribeDone(&reply) < 0) {
-            log_line_error("vehicle.subscribe_reply_failed");
-            return;
-        }
-    }
-    char ids[48];
-    format_module_list(list, ids, sizeof(ids));
-    log_line("vehicle.subscribe_requested modules=%s reply=gps rate_hz=%d auth=%s", ids,
-             kGpsReportIntervalSeconds, authorization_state(gps_authorization()));
+    SEND_MESSAGE(MSG_CMD_CAR_DATA_SUBSCRIBE_DONE,
+                 CCarLifeLib::getInstance()->cmdCarDataSubscribeDone(&reply), reply);
 }
 
 static void cb_car_data_subscribe_start(S_VEHICLE_INFO_LIST* list)
 {
+    msg_recv(MSG_CMD_CAR_DATA_SUBSCRIBE_START, *list);
+
     char ids[48];
     format_module_list(list, ids, sizeof(ids));
     if (!vehicle_list_names(list, kCarDataGps)) {
@@ -912,6 +1576,8 @@ static void cb_car_data_subscribe_start(S_VEHICLE_INFO_LIST* list)
 
 static void cb_car_data_subscribe_stop(S_VEHICLE_INFO_LIST* list)
 {
+    msg_recv(MSG_CMD_CAR_DATA_SUBSCRIBE_STOP, *list);
+
     if (!vehicle_list_names(list, kCarDataGps)) {
         return;
     }
@@ -998,14 +1664,19 @@ static void* gps_send_thread(void*)
             fix_logged = false;
         }
 
-        CmdWriteLock lock;
-        if (lib->cmdCarGPS(&gps) < 0) {
-            if (!failure_logged) {
-                log_line_error("gps.send_failed");
-                failure_logged = true;
-            }
-        } else {
+        /* The message goes out once a second, so a failure that persists is written once
+         * per run of failures instead of once per second. */
+        int rc;
+        {
+            CmdWriteLock lock;
+            rc = lib->cmdCarGPS(&gps);
+        }
+        if (rc >= 0) {
             failure_logged = false;
+            msg_send(MSG_CMD_CAR_GPS, rc, gps);
+        } else if (!failure_logged) {
+            msg_send(MSG_CMD_CAR_GPS, rc, gps);
+            failure_logged = true;
         }
     }
     return NULL;
@@ -1133,7 +1804,7 @@ static const char* hard_key_name(uint32_t keycode)
     case 0x00000020: return "KEYCODE_MEDIA_STOP";
     case 0x00000021: return "KEYCODE_VR_START";
     case 0x00000022: return "KEYCODE_VR_STOP";
-    default: return "unknown";
+    default: return "UNKNOWN";
     }
 }
 
@@ -1156,12 +1827,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_HU_PROTOCOL_VERSION version;
             version.majorVersion = get_be32(body);
             version.minorVersion = get_be32(body + 4);
-            {
-                CmdWriteLock lock;
-                lib->cmdHUProtoclVersion(&version);
-            }
-            log_line("session.protocol_version_sent major=%u minor=%u", version.majorVersion,
-                     version.minorVersion);
+            SEND_MESSAGE(MSG_CMD_HU_PROTOCOL_VERSION, lib->cmdHUProtoclVersion(&version), version);
 
             /* Identity first: the phone authenticates the head unit from it and only
              * then asks for the feature configuration */
@@ -1177,58 +1843,33 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             param.width = get_be32(body);
             param.height = get_be32(body + 4);
             param.frameRate = get_be32(body + 8);
-            {
-                CmdWriteLock lock;
-                lib->cmdVideoEncoderInit(&param);
-            }
-            log_line_debug("video.encoder_init_requested width=%u height=%u fps=%u", param.width,
-                           param.height, param.frameRate);
+            SEND_MESSAGE(MSG_CMD_VIDEO_ENCODER_INIT, lib->cmdVideoEncoderInit(&param), param);
             break;
         }
-        case CMD_VIDEO_ENCODER_START: {
-            CmdWriteLock lock;
-            lib->cmdVideoEncoderStart();
-            log_line_debug("video.encoder_started");
+        case CMD_VIDEO_ENCODER_START:
+            SEND_MESSAGE(MSG_CMD_VIDEO_ENCODER_START, lib->cmdVideoEncoderStart());
             break;
-        }
-        case CMD_VIDEO_ENCODER_PAUSE: {
-            CmdWriteLock lock;
-            lib->cmdVideoEncoderPause();
-            log_line("video.encoder_paused");
+        case CMD_VIDEO_ENCODER_PAUSE:
+            SEND_MESSAGE(MSG_CMD_VIDEO_ENCODER_PAUSE, lib->cmdVideoEncoderPause());
             break;
-        }
-        case CMD_VIDEO_ENCODER_RESET: {
-            CmdWriteLock lock;
-            lib->cmdVideoEncoderReset();
-            log_line("video.encoder_reset");
+        case CMD_VIDEO_ENCODER_RESET:
+            SEND_MESSAGE(MSG_CMD_VIDEO_ENCODER_RESET, lib->cmdVideoEncoderReset());
             break;
-        }
-        case CMD_GO_TO_FOREGROUND: {
-            CmdWriteLock lock;
-            lib->cmdGoToForeground();
-            log_line("phone.foreground_requested");
+        case CMD_GO_TO_FOREGROUND:
+            SEND_MESSAGE(MSG_CMD_GO_TO_FOREGROUND, lib->cmdGoToForeground());
             break;
-        }
-        case CMD_LAUNCH_MODE_NORMAL: {
-            CmdWriteLock lock;
-            lib->cmdLaunchModeNormal();
+        case CMD_LAUNCH_MODE_NORMAL:
+            SEND_MESSAGE(MSG_CMD_LAUNCH_MODE_NORMAL, lib->cmdLaunchModeNormal());
             break;
-        }
-        case CMD_LAUNCH_MODE_PHONE: {
-            CmdWriteLock lock;
-            lib->cmdLaunchModePhone();
+        case CMD_LAUNCH_MODE_PHONE:
+            SEND_MESSAGE(MSG_CMD_LAUNCH_MODE_PHONE, lib->cmdLaunchModePhone());
             break;
-        }
-        case CMD_LAUNCH_MODE_MAP: {
-            CmdWriteLock lock;
-            lib->cmdLaunchModeMap();
+        case CMD_LAUNCH_MODE_MAP:
+            SEND_MESSAGE(MSG_CMD_LAUNCH_MODE_MAP, lib->cmdLaunchModeMap());
             break;
-        }
-        case CMD_LAUNCH_MODE_MUSIC: {
-            CmdWriteLock lock;
-            lib->cmdLaunchModeMusic();
+        case CMD_LAUNCH_MODE_MUSIC:
+            SEND_MESSAGE(MSG_CMD_LAUNCH_MODE_MUSIC, lib->cmdLaunchModeMusic());
             break;
-        }
         case CMD_AUTHEN_REQUEST:
             if (g_authen_result == 1) {
                 log_line("auth.request_skipped reason=already_authenticated");
@@ -1243,6 +1884,8 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
         return;
     }
 
+    /* Pointer input goes out on the control channel, which has its own writer and does not
+     * take the command channel lock, so these sends are not reported by SEND_MESSAGE. */
     if (channel == CH_CTRL) {
         switch (tag) {
         case CMD_TOUCH_ACTION: {
@@ -1253,9 +1896,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             action.action = get_be32(body);
             action.x = get_be32(body + 4);
             action.y = get_be32(body + 8);
-            lib->ctrlTouchAction(&action);
-            /* Every drag point logs one line, which floods a debug run. */
-            /* log_line_debug("touch.sent action=%u x=%u y=%u", action.action, action.x, action.y); */
+            msg_send(MSG_TOUCH_ACTION, lib->ctrlTouchAction(&action), action);
             break;
         }
         case CMD_TOUCH_DOWN: {
@@ -1265,8 +1906,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_TOUCH_ACTION_DOWN point;
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
-            lib->ctrlTouchActionDown(&point);
-            log_line_debug("touch.sent action=down x=%u y=%u", point.x, point.y);
+            msg_send(MSG_TOUCH_ACTION_DOWN, lib->ctrlTouchActionDown(&point), point);
             break;
         }
         case CMD_TOUCH_UP: {
@@ -1276,8 +1916,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_TOUCH_ACTION_UP point;
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
-            lib->ctrlTouchActionUp(&point);
-            log_line_debug("touch.sent action=up x=%u y=%u", point.x, point.y);
+            msg_send(MSG_TOUCH_ACTION_UP, lib->ctrlTouchActionUp(&point), point);
             break;
         }
         case CMD_TOUCH_MOVE: {
@@ -1287,8 +1926,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_TOUCH_ACTION_MOVE point;
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
-            lib->ctrlTouchActionMove(&point);
-            log_line_debug("touch.sent action=move x=%u y=%u", point.x, point.y);
+            msg_send(MSG_TOUCH_ACTION_MOVE, lib->ctrlTouchActionMove(&point), point);
             break;
         }
         case CMD_TOUCH_SINGLE_CLICK: {
@@ -1298,8 +1936,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_TOUCH_SIGNAL_CLICK point;
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
-            lib->ctrlTouchSigleClick(&point);
-            log_line_debug("touch.sent action=click x=%u y=%u", point.x, point.y);
+            msg_send(MSG_TOUCH_SINGLE_CLICK, lib->ctrlTouchSigleClick(&point), point);
             break;
         }
         case CMD_TOUCH_DOUBLE_CLICK: {
@@ -1309,8 +1946,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_TOUCH_DOUBLE_CLICK point;
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
-            lib->ctrlTouchDoubleClick(&point);
-            log_line_debug("touch.sent action=double_click x=%u y=%u", point.x, point.y);
+            msg_send(MSG_TOUCH_DOUBLE_CLICK, lib->ctrlTouchDoubleClick(&point), point);
             break;
         }
         case CMD_TOUCH_LONG_PRESS: {
@@ -1320,8 +1956,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             S_TOUCH_LONG_PRESS point;
             point.x = get_be32(body);
             point.y = get_be32(body + 4);
-            lib->ctrlTouchLongPress(&point);
-            log_line_debug("touch.sent action=long_press x=%u y=%u", point.x, point.y);
+            msg_send(MSG_TOUCH_LONG_PRESS, lib->ctrlTouchLongPress(&point), point);
             break;
         }
         case CMD_HARD_KEY: {
@@ -1330,8 +1965,7 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
             }
             S_TOUCH_CAR_HARD_KEY_CODE key;
             key.keycode = get_be32(body);
-            lib->ctrlTouchCarHardKeyCode(&key);
-            log_line_debug("key.sent name=%s code=0x%08X", hard_key_name(key.keycode), key.keycode);
+            msg_send(MSG_TOUCH_CAR_HARD_KEY_CODE, lib->ctrlTouchCarHardKeyCode(&key), key);
             break;
         }
         default:
