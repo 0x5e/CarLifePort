@@ -408,8 +408,7 @@ Linux 的 `/etc/machine-id`），不提供配置项。
 |---|---|
 | `touch` 的 contacts | 取 id 最小的触点，按按下状态映射 DOWN / MOVE / UP；空列表即 UP，坐标沿用最后位置（CarLife 只支持单点） |
 | `knob.select` / `home` / `back` | 硬按键 ok(0x14) / main(0x1E) / back(0x0E) |
-| `knob.x` 方向 | 硬按键 move left(0x15) / move right(0x16) |
-| `knob.y` 方向 | 硬按键 selector previous(0x07) / selector next(0x06) |
+| `knob.x` / `knob.y` 方向 | 硬按键 move left(0x15) / move right(0x16) / move up(0x17) / move down(0x18) |
 | `media` 3 / 4 / 5 | 硬按键 media start(0x1F) 与 media stop(0x20) 交替 / seek add(0x10) / seek sub(0x0F) |
 | `telephony` 1 / 2 | 硬按键 phone call(0x02) 或 phone end(0x03)，按手机上报的通话状态选择 / mute(0x13) |
 | `siri` | 硬按键 VR start(0x21) 与 VR stop(0x22) 交替 |
@@ -420,10 +419,10 @@ Linux 的 `/etc/machine-id`），不提供配置项。
 
 实现要点：
 
-- **方向键分两组。** `selector previous/next` 的含义是「在当前小区域中切换焦点」（等效于旋转旋钮），
-  `move left/right` 的含义是「跳到左右相邻的小区域」。`move up/down` 协议中同样存在，但手机在列表
-  界面上不响应（实测 0x17/0x18 无反应，0x07/0x06 可使焦点上下移动），而 selector 没有横向版本，
-  因此纵轴使用 selector、横轴使用 move。
+- **四个方向统一使用 `move`。** 手机端把 `move left/right/up/down` 注入为 Android
+  `DPAD_LEFT/RIGHT/UP/DOWN`，交给当前界面处理；`selector(0x06/0x07)` 会被改写成 CarLife 内部的
+  focus next/prev，只在它自己的焦点框架里生效，且只有上下两档，因此不用于四向键。列表类界面若没有
+  View 接收 DPAD，纵轴可能无反应，属于消费方行为。
 - **`home` 使用 `main(0x1E)`。** `KEYCODE_Home(0x01)` 的含义是「按下手机的 Home 键」，会把 CarLife
   切到后台；「回到 CarLife 主界面」对应 `KEYCODE_MAIN`，开源车机端的 Home 按钮发送的也是它
   （`ControlTestWindow`）。

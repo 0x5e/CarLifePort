@@ -541,22 +541,22 @@ func channelsFromConfig(config int) int {
 // numbers them the same way (CommonParams.KEYCODE_*) and its control panel sends exactly
 // one of these per button (ControlTestWindow).
 const (
-	keyPhoneCall    = 0x00000002 // place or answer a call
-	keyPhoneEnd     = 0x00000003 // hang up
-	keySelectorNext = 0x00000006 // focus the next item in the current region
-	keySelectorPrev = 0x00000007 // focus the previous item
-	keyBack         = 0x0000000E // back to the previous CarLife screen
-	keySeekSub      = 0x0000000F // previous track
-	keySeekAdd      = 0x00000010 // next track
-	keyMute         = 0x00000013 // mute the microphone while on a call
-	keyOK           = 0x00000014 // confirm the focused item
-	keyMoveLeft     = 0x00000015 // focus the region to the left
-	keyMoveRight    = 0x00000016 // focus the region to the right
-	keyMain         = 0x0000001E // the CarLife home screen
-	keyMediaStart   = 0x0000001F // play
-	keyMediaStop    = 0x00000020 // pause
-	keyVRStart      = 0x00000021 // open the voice recognition screen
-	keyVRStop       = 0x00000022 // close it
+	keyPhoneCall  = 0x00000002 // place or answer a call
+	keyPhoneEnd   = 0x00000003 // hang up
+	keyBack       = 0x0000000E // back to the previous CarLife screen
+	keySeekSub    = 0x0000000F // previous track
+	keySeekAdd    = 0x00000010 // next track
+	keyMute       = 0x00000013 // mute the microphone while on a call
+	keyOK         = 0x00000014 // confirm the focused item
+	keyMoveLeft   = 0x00000015 // focus the region to the left
+	keyMoveRight  = 0x00000016 // focus the region to the right
+	keyMoveUp     = 0x00000017 // focus the region above
+	keyMoveDown   = 0x00000018 // focus the region below
+	keyMain       = 0x0000001E // the CarLife home screen
+	keyMediaStart = 0x0000001F // play
+	keyMediaStop  = 0x00000020 // pause
+	keyVRStart    = 0x00000021 // open the voice recognition screen
+	keyVRStop     = 0x00000022 // close it
 )
 
 // Call states the phone reports over EV_TELE_STATE.
@@ -663,13 +663,9 @@ func (s *session) handleTouch(contacts []touchContact) {
 	}
 }
 
-// handleKnob translates a knob event from the client into CarLife hard keys. CarLife
-// has no knob of its own, so the four directions are emulated with the two families of
-// keycodes the protocol does offer: Selector_Previous/Next move the focus within the
-// current region (what turning a knob does) and Move_Left/Right jump to the neighbouring
-// region. Move_Up/Down exist as well, but the phone ignores them on its list screens while
-// it does act on Selector, and Selector has no horizontal counterpart - hence one family
-// per axis.
+// handleKnob translates a knob event from the client into CarLife hard keys. CarLife has no
+// knob of its own, so each direction is sent as the matching Move_* key, which moves the focus
+// to the neighbouring region.
 func (s *session) handleKnob(knob knobState) {
 	switch {
 	case knob.Select:
@@ -683,9 +679,9 @@ func (s *session) handleKnob(knob knobState) {
 	case knob.X > 0:
 		s.sendHardKey(keyMoveRight)
 	case knob.Y < 0:
-		s.sendHardKey(keySelectorPrev)
+		s.sendHardKey(keyMoveUp)
 	case knob.Y > 0:
-		s.sendHardKey(keySelectorNext)
+		s.sendHardKey(keyMoveDown)
 	}
 }
 

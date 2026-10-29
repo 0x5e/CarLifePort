@@ -1798,6 +1798,8 @@ static const char* hard_key_name(uint32_t keycode)
     case 0x00000014: return "KEYCODE_OK";
     case 0x00000015: return "KEYCODE_MOVE_LEFT";
     case 0x00000016: return "KEYCODE_MOVE_RIGHT";
+    case 0x00000017: return "KEYCODE_MOVE_UP";
+    case 0x00000018: return "KEYCODE_MOVE_DOWN";
     case 0x0000001E: return "KEYCODE_MAIN";
     case 0x0000001F: return "KEYCODE_MEDIA_START";
     case 0x00000020: return "KEYCODE_MEDIA_STOP";
