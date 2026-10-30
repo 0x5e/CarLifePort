@@ -570,8 +570,12 @@ func (s *session) handleClientMessage(data []byte) {
 			s.handleMedia(*message.Media)
 		}
 	case "keyframe":
-		// CarLife has no way to ask the phone for a keyframe; the encoder restarts on
-		// its own GOP, so the request is dropped.
+		// CarLife has no dedicated keyframe request; starting the encoder again makes the
+		// phone emit a fresh keyframe for it, which is what a browser joining the stream
+		// (or one that lost its decoder) needs.
+		if err := s.link.sendVideoEncoderStart(); err != nil {
+			errorf(moduleSession, "video.encoder_start_failed err=%v consequence=keyframe_missing", err)
+		}
 	case "night":
 		// CarPlay-only control with no CarLife equivalent.
 	case "siri":

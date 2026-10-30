@@ -11,8 +11,9 @@ import (
 )
 
 // keyframeWaitFallback bounds how long a viewer is held back while waiting for a
-// keyframe. CarLife has no "request keyframe" command, so a viewer that joins in the
-// middle of a long GOP can only wait; this keeps the wait finite.
+// keyframe. The browser's request restarts the encoder but does not guarantee a keyframe,
+// so a viewer that joins in the middle of a long GOP can only wait; this keeps the wait
+// finite.
 const keyframeWaitFallback = 10 * time.Second
 
 // viewerQueueDepth is the per-viewer send queue depth. It matches SEND_QUEUE_CAPACITY in

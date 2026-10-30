@@ -408,7 +408,7 @@ Linux 的 `/etc/machine-id`），不提供配置项。
 | `media` 3 / 4 / 5 | 硬按键 media start(0x1F) 与 media stop(0x20) 交替 / seek add(0x10) / seek sub(0x0F) |
 | `telephony` 1 / 2 | 硬按键 phone call(0x02) 或 phone end(0x03)，按手机上报的通话状态选择 / mute(0x13) |
 | `siri` | 硬按键 VR start(0x21) 与 VR stop(0x22) 交替 |
-| `keyframe` | 丢弃：CarLife 没有「请求关键帧」命令 |
+| `keyframe` | 发送 `MSG_CMD_VIDEO_ENCODER_START`：CarLife 没有单独的关键帧请求，重开编码器后手机会输出新的关键帧 |
 | `night` | 丢弃：CarPlay 专属，CarLife 无对应 |
 | `ping` | 回 `{"type":"pong"}` |
 | 二进制帧（麦克风上行） | 丢弃：CarLife 的语音上行由手机发起 |
