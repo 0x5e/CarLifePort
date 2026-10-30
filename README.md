@@ -156,8 +156,6 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 三个必填参数的取值只来自 `carlifed`（渠道号是 `CL_CHANNEL`，车机 id 取本机 host uuid，socket 路径
 是内部常量），链接进程不重复定义；缺任一个都会直接报错退出，`--list` 不需要它们。
 
-周期性的转发统计默认打印但标记为 debug，由 `carlifed` 按级别过滤。
-
 ### 日志
 
 两个进程的输出汇入同一终端，格式为 `时间 级别 [模块] 事件 字段=值…`：
@@ -168,7 +166,6 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 17:08:36.422 INFO  [stack]      link.listening path=/tmp/carlife-link.sock
 17:08:37.987 INFO  [link]       link.connected path=/tmp/carlife-link.sock
 17:08:41.203 INFO  [stack]      msg.recv service_type=0x00010008(MSG_CMD_VIDEO_ENCODER_INIT_DONE) width=1280 height=720 frameRate=60
-17:08:41.208 DEBUG [session]    video.stats fps=59.8 frames=299 rate_kb_s=3612.4 window=5s requested_fps=60
 ```
 
 正文是「事件 字段=值…」。事件是 `<范围>.<对象>_<结果>` 形式的稳定名字（`session.channels_ready`、
@@ -232,8 +229,7 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 `service_type=0x…(UNKNOWN)`，那是漏登记；发送失败不看级别，一律 `error`。
 
 一条消息因此在日志里只出现一次：后端只记自己的判断（`session.idle_resend`、
-`session.version_mismatch`、`video.frame_rate_limited`），消息本身由 `msg.send` / `msg.recv`
-承担，不再逐个事件另打一行。
+`session.version_mismatch`），消息本身由 `msg.send` / `msg.recv` 承担，不再逐个事件另打一行。
 
 ### 设备接入时机
 

@@ -83,10 +83,8 @@ type session struct {
 	authenDone    bool
 	lastAuthenTry time.Time
 
-	// Received video frames over the current measurement window, reported periodically
-	// to tell a phone-side frame rate limit apart from frames lost on our side.
+	// Received video frames in the current window; a window with none is reported.
 	frameCount int
-	frameBytes int
 	fpsWindow  time.Time
 
 	touchDown bool
@@ -148,7 +146,6 @@ func (s *session) resetStream() {
 	s.lastProgress = time.Now()
 	s.authenDone = false
 	s.frameCount = 0
-	s.frameBytes = 0
 	s.fpsWindow = time.Now()
 	s.mu.Unlock()
 }
@@ -208,8 +205,8 @@ func (s *session) requestAuthentication() {
 	}
 }
 
-// reportFrameRate logs the measured rate of the video frames arriving from the phone,
-// which is what tells a phone-side limit apart from frames lost on this side.
+// reportFrameRate reports a window in which no video frame arrived, which is what tells a
+// stalled stream apart from one that never started.
 func (s *session) reportFrameRate() {
 	s.mu.Lock()
 	elapsed := time.Since(s.fpsWindow)
@@ -217,17 +214,13 @@ func (s *session) reportFrameRate() {
 		s.mu.Unlock()
 		return
 	}
-	frames, total, requested := s.frameCount, s.frameBytes, s.requestedFPS
-	s.frameCount, s.frameBytes, s.fpsWindow = 0, 0, time.Now()
+	frames := s.frameCount
+	s.frameCount, s.fpsWindow = 0, time.Now()
 	s.mu.Unlock()
 
 	if frames == 0 {
 		debugf(moduleSession, "video.stats frames=0 window=%s", elapsed.Truncate(time.Second))
-		return
 	}
-	debugf(moduleSession, "video.stats fps=%.1f frames=%d rate_kb_s=%.1f window=%s requested_fps=%d",
-		float64(frames)/elapsed.Seconds(), frames, float64(total)/1024/elapsed.Seconds(),
-		elapsed.Truncate(time.Second), requested)
 }
 
 /* ------------------------------------------------------------ carlife-link events */
@@ -291,16 +284,11 @@ func (s *session) onCommandEvent(event linkEvent) {
 		}
 		width := int(binary.BigEndian.Uint32(event.payload))
 		height := int(binary.BigEndian.Uint32(event.payload[4:]))
-		fps := int(binary.BigEndian.Uint32(event.payload[8:]))
 		s.mu.Lock()
 		s.width, s.height = width, height
-		requestedFPS := s.requestedFPS
 		s.mu.Unlock()
-		// The sizes are in msg.recv of MSG_CMD_VIDEO_ENCODER_INIT_DONE; what is worth a
-		// line here is the phone accepting fewer frames than it was asked for.
-		if fps > 0 && fps < requestedFPS {
-			warnf(moduleSession, "video.frame_rate_limited fps=%d requested_fps=%d", fps, requestedFPS)
-		}
+		// The sizes, and the frame rate the phone settled on, are in msg.recv of
+		// MSG_CMD_VIDEO_ENCODER_INIT_DONE.
 		if err := s.link.sendVideoEncoderStart(); err != nil {
 			errorf(moduleSession, "video.encoder_start_failed err=%v consequence=no_video", err)
 		}
@@ -426,14 +414,12 @@ func (s *session) onVideoData(data []byte) {
 	first := !s.streaming
 	s.streaming = true
 	if first {
-		// Measure from the first frame; otherwise the first window covers the idle time
-		// before the stream started and reports a rate that is too low.
+		// Count from the first frame; otherwise the first window covers the idle time
+		// before the stream started.
 		s.frameCount = 0
-		s.frameBytes = 0
 		s.fpsWindow = time.Now()
 	}
 	s.frameCount++
-	s.frameBytes += len(data)
 	width, height := s.width, s.height
 	if width <= 0 || height <= 0 {
 		// The encoder-init-done message never arrived (possible after a link rebuild), so
