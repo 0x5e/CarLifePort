@@ -292,7 +292,7 @@ typedef struct message_spec {
     X(MSG_CMD_CAR_DATA_SUBSCRIBE, 0x00010031, MSG_LOG_INFO, format_vehicle_info_list)              \
     X(MSG_CMD_CAR_DATA_SUBSCRIBE_START, 0x00010033, MSG_LOG_INFO, format_vehicle_info_list)        \
     X(MSG_CMD_MEDIA_INFO, 0x00010035, MSG_LOG_INFO, format_media_info)                             \
-    X(MSG_CMD_MEDIA_PROGRESS_BAR, 0x00010036, MSG_LOG_DEBUG, format_media_progress)                \
+    X(MSG_CMD_MEDIA_PROGRESS_BAR, 0x00010036, MSG_LOG_OFF, format_media_progress)                  \
     X(MSG_CMD_CONNECT_EXCEPTION, 0x00010037, MSG_LOG_INFO, format_connect_exception)               \
     X(MSG_CMD_MD_AUTHEN_RESPONSE, 0x00010049, MSG_LOG_INFO, format_authen_response)                \
     X(MSG_CMD_MD_AUTHEN_RESULT, 0x0001004B, MSG_LOG_INFO, format_authen_result)                    \
