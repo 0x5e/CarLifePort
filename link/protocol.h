@@ -49,6 +49,7 @@ enum {
     EV_FEATURE_CONFIG_REQUEST = 15,
     EV_AUTHEN_RESULT = 16,      /* [1B result] 1 = the phone authenticated this head unit */
     EV_GO_TO_DESKTOP = 17,
+    EV_MUSIC_STATE = 18,        /* [1B running] 1 = the music module is running */
     EV_LOG = 90                 /* UTF-8 text, for diagnostics */
 };
 

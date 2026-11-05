@@ -1112,9 +1112,25 @@ static void cb_mic_recog(void)
     msg_recv(MSG_CMD_MIC_RECORD_RECOG_START);
 }
 
+/* Module 3 is music; status 1 is running, 0 is idle (module_status_name above). Only music is
+ * forwarded: it tells the backend whether the play/pause button should send start or stop, and
+ * no other module has a use for it. */
+static const u32 kModuleMusic = 3;
+static const u32 kMusicRunning = 1;
+
 static void cb_module_status(S_MODULE_STATUS_LIST_MOBILE* list)
 {
     msg_recv(MSG_CMD_MODULE_STATUS, *list);
+    unsigned i = 0;
+    for (const S_MODULE_STATUS_MOBILE* node = list->moduleStatus; node != NULL && i < (unsigned)list->cnt;
+         node = node->next, ++i) {
+        if (node->moduleID != kModuleMusic) {
+            continue;
+        }
+        u8 running = node->statusID == kMusicRunning ? 1 : 0;
+        send_frame(CH_CMD, EV_MUSIC_STATE, &running, 1);
+        return;
+    }
 }
 
 static void cb_navi_next_turn(S_NAVI_NEXT_TURN_INFO* info)

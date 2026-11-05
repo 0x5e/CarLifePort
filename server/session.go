@@ -331,6 +331,14 @@ func (s *session) onCommandEvent(event linkEvent) {
 			s.sendHardKey(keyMain)
 		}
 
+	case evMusicState:
+		// The music module reports running only while the phone streams program audio, which
+		// is the same state MSG_MEDIA_PAUSE / MSG_MEDIA_RESUME_PLAY carries, and it arrives on
+		// module changes the audio events do not cover.
+		if len(event.payload) >= 1 {
+			s.setMediaPlaying(event.payload[0] == 1)
+		}
+
 	case evLog:
 		debugf(moduleSession, "phone.log text=%q", string(event.payload))
 	}
@@ -500,10 +508,34 @@ func (s *session) onAudioEvent(streamType byte, name string, event linkEvent) {
 
 	case evAudioStop:
 		s.hub.BroadcastAudioStopped(streamType, encodeAudioStopped(streamType))
+		if streamType == audioStreamMedia {
+			s.setMediaPlaying(false)
+		}
 
-	case evAudioPause, evAudioResume, evAudioSeek:
-		// CarLife playback control only affects the phone side; no extra action is needed here.
+	case evAudioPause:
+		// The phone owns playback state: it reports pauses and resumes over these two
+		// messages, including the ones the user triggers on the phone itself, so the browser
+		// button has to read the state back instead of tracking its own flips.
+		if streamType == audioStreamMedia {
+			s.setMediaPlaying(false)
+		}
+
+	case evAudioResume:
+		if streamType == audioStreamMedia {
+			s.setMediaPlaying(true)
+		}
+
+	case evAudioSeek:
+		// Seeking leaves the play/pause state unchanged and needs no local action.
 	}
+}
+
+// setMediaPlaying records the state the play/pause button reacts to. Two sources report it:
+// the events of the media stream above, and the music entry of MSG_CMD_MODULE_STATUS.
+func (s *session) setMediaPlaying(playing bool) {
+	s.mu.Lock()
+	s.mediaPlaying = playing
+	s.mu.Unlock()
 }
 
 // channelsFromConfig maps CarLife's channelConfig to a channel count.
@@ -678,7 +710,10 @@ func (s *session) handleKnob(knob knobState) {
 // handleMedia maps the playport media button indices onto CarLife hard keys: 3 = play or
 // pause, 4 = next track, 5 = previous track. The reference head unit routes Android's
 // KEYCODE_MEDIA_PREVIOUS/NEXT to Seek_Sub/Add the same way (MediaButtonReceiver) and gives
-// play and pause a button each (ControlTestWindow), so the single button here alternates.
+// play and pause a button each (ControlTestWindow), so the single button has to pick one from
+// the state the phone reported over MSG_MEDIA_PAUSE / MSG_MEDIA_RESUME_PLAY. The flip is also
+// kept here because the phone does not echo back every key it receives; the next report
+// overwrites it.
 func (s *session) handleMedia(index int) {
 	switch index {
 	case 3:
