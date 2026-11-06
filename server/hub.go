@@ -32,6 +32,15 @@ type serverMessage struct {
 	Height        int    `json:"height,omitempty"`
 	Viewers       int    `json:"viewers"`
 	Message       string `json:"message,omitempty"`
+
+	// The microphone request, sent as {"type":"mic"}: the browser opens its microphone and
+	// streams PCM back while the phone is recording. MicActive is a pointer because false
+	// is a request of its own (stop capturing), not an absent field.
+	MicActive           *bool  `json:"micActive,omitempty"`
+	MicRate             int    `json:"micRate,omitempty"`
+	MicChannels         int    `json:"micChannels,omitempty"`
+	MicCodec            string `json:"micCodec,omitempty"`
+	MicSamplesPerPacket int    `json:"micSamplesPerPacket,omitempty"`
 }
 
 type outbound struct {
@@ -65,6 +74,11 @@ type Hub struct {
 	// the decoder configuration, so nothing is ever painted.
 	videoConfig map[byte][]byte
 	audioConfig map[byte][]byte
+
+	// Most recent microphone request. The phone only reports when a capture starts and
+	// ends, so a viewer that reconnects in between has to be told again; nil means no
+	// capture has been requested in this session.
+	micState []byte
 }
 
 func newHub(deviceName string, display *displayState) *Hub {
@@ -192,6 +206,16 @@ func (h *Hub) BroadcastAudioStopped(streamType byte, frame []byte) {
 	deliver(h.snapshot(), outbound{data: frame})
 }
 
+// BroadcastMic sends the microphone request and keeps it for viewers that connect later:
+// the phone reports only the moments a capture starts and ends, so a viewer that joins or
+// reconnects in between would never be told to open its microphone.
+func (h *Hub) BroadcastMic(frame []byte) {
+	h.mu.Lock()
+	h.micState = frame
+	h.mu.Unlock()
+	deliver(h.snapshot(), outbound{text: true, data: frame})
+}
+
 // BroadcastJSON sends one control message to all viewers.
 func (h *Hub) BroadcastJSON(value any) {
 	data, err := json.Marshal(value)
@@ -270,6 +294,12 @@ func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 	}
+	if h.micState != nil {
+		select {
+		case v.send <- outbound{text: true, data: h.micState}:
+		default:
+		}
+	}
 	h.mu.Unlock()
 
 	h.add(v)
@@ -281,10 +311,10 @@ func (h *Hub) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		// Anything that is not JSON is microphone uplink (0x10 LPCM / 0x11 Opus).
-		// CarLife voice uplink is driven by the phone, not by the head unit, so it is
-		// discarded.
+		// Anything that is not JSON is the microphone uplink (0x10 LPCM / 0x11 Opus),
+		// which only arrives while the phone is recording.
 		if !isJSONPayload(data) {
+			h.session.handleMicData(data)
 			continue
 		}
 		if messageType(data) == "ping" {

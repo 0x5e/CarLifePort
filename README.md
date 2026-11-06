@@ -182,7 +182,7 @@ URL 中的 `token` 是 playport 前端要求的访问令牌，固定为 `0`：�
 | `carlifed` | 启动、关闭与配置（`server/main.go`） |
 | `supervisor` | 链接进程的拉起和重启 |
 | `link` | 与链接进程的 Unix socket 连接（`server/linkclient.go`） |
-| `session` | CarLife 会话状态机：握手、视频、音频、按键 |
+| `session` | CarLife 会话状态机：握手、视频、音频、语音、按键 |
 | `viewer` | 浏览器连接与 HTTP/WebSocket 接口 |
 | `bridge` / `stack` | 链接进程的两半：USB 传输与协议栈，其输出由 `carlifed` 转发 |
 
@@ -387,13 +387,29 @@ Linux 的 `/etc/machine-id`），不提供配置项。
 `CL_GPS=0`（默认）不采样也不声明：`..._SUBSCRIBE_DONE` 回空列表，手机因此不订阅，进程启动时也不会
 触发定位授权对话框。需要车机向手机提供位置时置 `CL_GPS=1`。
 
+### 语音通道（VR）
+
+指南第 10.5 章的语音通道双向：手机把语音助手的提示音发下来（`MSG_VR_AUDIO_INIT` /
+`..._DATA` / `..._STOP`，0x00050002/3/4），车机把识别用的录音发上去（`MSG_VR_DATA`，
+0x00058001），两个方向都是 16 kHz、单声道、16 bit 小端 PCM。下行接成第三路音频，音轨名
+`Voice`，与 Media、Navigation 一样解码播放。
+
+录音由手机发起：`MSG_CMD_MIC_RECORD_WAKEUP_START` / `..._RECOG_START` 开始，`..._END` 结束。
+后端收到开始事件后让浏览器打开麦克风（playport 的 `mic` 消息），把上行二进制帧（`0x10` + PCM）
+按 1 KB 一个包送进语音通道。功能定制项保持 `VOICE_MIC=0`（使用车机麦克风），这里的「车机麦克风」
+就是浏览器所在设备的麦克风；没有 viewer 时无人采集，手机只拿到静音，日志记
+`session.voice_capture state=start viewers=0`。
+
+手机自己在识别开始时暂停 Media、结束时恢复（`MSG_MEDIA_PAUSE` / `MSG_MEDIA_RESUME_PLAY`），
+提示音与 Media 之间不做混音控制。
+
 ## 与 playport 前端的接口对齐
 
 `server/` 实现 playport 服务端的接口契约，前端因此可以直接使用：
 
 | 接口 | 内容 |
 |---|---|
-| `GET /ws?token=` | 令牌不符直接按策略违规关闭。接入后先发 `hello`，再回放已缓存的 video/audio 配置，然后才把该 viewer 计入广播 |
+| `GET /ws?token=` | 令牌不符直接按策略违规关闭。接入后先发 `hello`，再回放已缓存的 video/audio 配置与麦克风请求，然后才把该 viewer 计入广播 |
 | `GET /api/status` | deviceName / sessionActive / phone / viewers / display |
 | `GET /api/display` | width / height / fps / uiScale / hevc / orientation / presets |
 | `POST /api/display?token=` | 改分辨率与帧率，返回 `{"ok":true}` 或 `{"error":...}`；HEVC 与非法参数会被拒绝 |
@@ -412,7 +428,7 @@ Linux 的 `/etc/machine-id`），不提供配置项。
 | `keyframe` | 发送 `MSG_CMD_VIDEO_ENCODER_START`：CarLife 没有单独的关键帧请求，重开编码器后手机会输出新的关键帧 |
 | `night` | 丢弃：CarPlay 专属，CarLife 无对应 |
 | `ping` | 回 `{"type":"pong"}` |
-| 二进制帧（麦克风上行） | 丢弃：CarLife 的语音上行由手机发起 |
+| 二进制帧（麦克风上行） | 转发到语音通道（`MSG_VR_DATA`），只在手机要求录音时 |
 
 实现要点：
 
@@ -427,9 +443,8 @@ Linux 的 `/etc/machine-id`），不提供配置项。
   按下只会切换界面（实测如此）；播放/暂停使用 `media start(0x1F)` / `media stop(0x20)`。上一首/下一首
   使用 `seek sub/add`，开源车机端把 Android 的 `KEYCODE_MEDIA_PREVIOUS/NEXT` 映射到这两条
   （`MediaButtonReceiver`），不使用 `selector`。
-- **`siri` 只覆盖开关。** `VR start/stop` 可打开与关闭语音识别界面，但识别本身需要麦克风：功能定制项中
-  上报的是 `VOICE_MIC=0`（使用车机麦克风），手机据此等待 VR 通道上的 PCM，而服务端不发送（`vr ↑0`），
-  语音输入仍不通。要打通需改报 `VOICE_MIC=1`（使用手机麦克风）或实现 VR 通道上行。
+- **`siri` 是语音识别的开关。** `VR start/stop` 打开与关闭语音识别界面；识别本身由手机发起，
+  它用 `MSG_CMD_MIC_RECORD_*` 要录音，后端再向浏览器要麦克风（见「语音通道」）。
 
 前端的 contacts 只在手指按下期间存在：`pointerup` 把该触点从列表中直接删除，而不是补发一条 `down`
 为假的记录（见 `input.ts` 的 `scheduleFlush`），因此抬手一定表现为该槽位在消息中消失。抬手事件本身
@@ -437,13 +452,13 @@ Linux 的 `/etc/machine-id`），不提供配置项。
 为离开控件并取消这次按压，表现为按钮按下与抬起的视觉都在、功能不生效。服务端因此记录每个触点最后
 发送的设备像素坐标，抬手时按原位置发送 UP；拖动过的手指抬手也落在拖动后的位置。
 
-音频流名经 wire 传给前端并直接作为音量滑块标签，因此使用英文 `Media` / `Navigation`。
+音频流名经 wire 传给前端并直接作为音量滑块标签，因此使用英文 `Media` / `Navigation` / `Voice`。
 
 ## 已知限制
 
 - 只实现有线（AOA）通路，无线 CarLife 未实现。
 - 触摸为单点，CarLife 协议本身不支持多指：前端的多点触点中只有 id 最小的那个生效。
-- 麦克风上行未接通：CarLife 的语音通道由手机发起，服务端不向浏览器请求麦克风。
+- 语音识别用的是浏览器所在设备的麦克风：需要先授权，页面关闭或没有 viewer 时手机只收到静音。
 - 视频只有 H.264；音频按 16 位 PCM 处理。
 - 帧率由手机决定：请求 60 fps 时手机可能仍按 30 fps 编码，后端只能报告实测值。
 - 双向鉴权已在真机上走通：17.1 的 RSA 验签与 17.2 的渠道号都被对端接受，「未认证的车机端」提示不再

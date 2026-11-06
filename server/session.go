@@ -100,6 +100,11 @@ type session struct {
 	mediaPlaying bool
 	// The same for the one voice button, which opens and closes the recognition screen.
 	voiceActive bool
+	// Whether the phone is waiting for microphone audio on the voice channel.
+	voiceRecording bool
+	// Set once a capture delivers a codec other than LPCM, so a whole stream of such
+	// packets costs one warning instead of one per packet.
+	micUnsupported bool
 	// Last call state the phone reported, which decides whether the single call button
 	// means "answer" or "hang up".
 	callState int
@@ -137,6 +142,10 @@ func newSession(link *linkClient, hub *Hub, width, height, fps int) *session {
 // the browser with no decoder configuration at all, and video frames would be useless
 // even though they keep arriving.
 func (s *session) resetStream() {
+	// A recording request belongs to the session that made it, so a new link means the
+	// browser may close its microphone: the phone will not report the end of a capture it
+	// started over the connection that just went away.
+	s.stopVoiceCapture()
 	s.mu.Lock()
 	s.streaming = false
 	s.touchDown = false
@@ -241,7 +250,7 @@ func (s *session) onLinkEvent(event linkEvent) {
 	case chTTS:
 		s.onAudioEvent(audioStreamTTS, streamNameTTS, event)
 	case chVR:
-		// Voice upstream is pushed by the phone on its own; this process only forwards it, so no extra handling is needed.
+		s.onAudioEvent(audioStreamVR, streamNameVR, event)
 	}
 }
 
@@ -338,6 +347,14 @@ func (s *session) onCommandEvent(event linkEvent) {
 		if len(event.payload) >= 1 {
 			s.setMediaPlaying(event.payload[0] == 1)
 		}
+
+	case evMicWakeup, evMicRecog:
+		// The phone wants the head unit microphone: voice wakeup or recognition is starting,
+		// and the phone waits for PCM on the voice channel (guide 10.5.3).
+		s.startVoiceCapture()
+
+	case evMicEnd:
+		s.stopVoiceCapture()
 
 	case evLog:
 		debugf(moduleSession, "phone.log text=%q", string(event.payload))
@@ -553,6 +570,96 @@ func channelsFromConfig(config int) int {
 	}
 }
 
+/* ---------------------------------------------------------------------- voice */
+
+// The voice channel is bidirectional (guide 10.5): the phone sends the prompts of its
+// voice assistant on it, and the head unit returns the recording the recognition runs on.
+// Both directions are 16 kHz, mono, 16-bit little-endian PCM.
+//
+// The recording belongs to the browser, which is the head unit's microphone here: the
+// phone asks for it with MSG_CMD_MIC_RECORD_WAKEUP_START / ..._RECOG_START and stops it
+// with ..._END, and playport's "mic" message tells the client to capture. 512 samples is
+// the 1 KB packet the guide gives for this direction (table 10.5-1).
+const (
+	micSampleRate       = 16000
+	micSamplesPerPacket = 512
+	micCodecLPCM        = 0x10
+)
+
+// startVoiceCapture tells the browser to open its microphone. The phone repeats
+// ..._RECOG_START up to three times while a recognition retries, and restarting the
+// capture on each repeat would throw away the audio already collected.
+func (s *session) startVoiceCapture() {
+	s.mu.Lock()
+	already := s.voiceRecording
+	s.voiceRecording = true
+	s.micUnsupported = false
+	s.mu.Unlock()
+	if already {
+		return
+	}
+
+	active := true
+	s.hub.BroadcastMic(mustJSON(serverMessage{
+		Type:                "mic",
+		MicActive:           &active,
+		MicRate:             micSampleRate,
+		MicChannels:         1,
+		MicCodec:            "lpcm",
+		MicSamplesPerPacket: micSamplesPerPacket,
+	}))
+
+	// Without a viewer nothing captures, and the phone's recognition then runs on silence.
+	viewers := s.hub.count()
+	if viewers == 0 {
+		warnf(moduleSession, "session.voice_capture state=start viewers=0 consequence=no_mic_pcm")
+		return
+	}
+	infof(moduleSession, "session.voice_capture state=start viewers=%d rate_hz=%d packet_bytes=%d",
+		viewers, micSampleRate, micSamplesPerPacket*2)
+}
+
+func (s *session) stopVoiceCapture() {
+	s.mu.Lock()
+	active := s.voiceRecording
+	s.voiceRecording = false
+	s.mu.Unlock()
+	if !active {
+		return
+	}
+	inactive := false
+	s.hub.BroadcastMic(mustJSON(serverMessage{Type: "mic", MicActive: &inactive}))
+	infof(moduleSession, "session.voice_capture state=stop")
+}
+
+// handleMicData forwards one packet the browser captured. Only LPCM is passed on: the
+// request above asks for it, and the phone parses this channel as raw PCM.
+func (s *session) handleMicData(data []byte) {
+	if len(data) < 2 {
+		return
+	}
+	if data[0] != micCodecLPCM {
+		s.mu.Lock()
+		warned := s.micUnsupported
+		s.micUnsupported = true
+		s.mu.Unlock()
+		if !warned {
+			warnf(moduleSession, "session.mic_frame_dropped codec=0x%02X consequence=no_voice_input", data[0])
+		}
+		return
+	}
+	s.mu.Lock()
+	recording := s.voiceRecording
+	s.mu.Unlock()
+	if !recording {
+		// A packet that was already in flight when the capture was stopped.
+		return
+	}
+	if err := s.link.sendVRData(data[1:]); err != nil {
+		errorf(moduleSession, "session.mic_send_failed err=%v consequence=no_voice_input", err)
+	}
+}
+
 /* ------------------------------------------------------------ browser command handling */
 
 // CarLife hard key codes, table 10.6-1 of the protocol guide. The reference head unit
@@ -755,9 +862,9 @@ func (s *session) handleTelephony(action int) {
 // handleSiri opens and closes CarLife's voice recognition screen. The client sends a single
 // event per press, but CarLife has a key for each direction, so the two alternate.
 //
-// Recognition itself needs a microphone, which is a separate gap: the feature configuration
-// we report says the vehicle microphone is used (VOICE_MIC=0), and the phone then waits for
-// PCM on the VR channel, which we never send.
+// The recognition that follows is driven by the phone: the feature configuration says the
+// vehicle microphone is used (VOICE_MIC=0), so the phone asks for the recording with
+// MSG_CMD_MIC_RECORD_RECOG_START and startVoiceCapture answers it.
 func (s *session) handleSiri() {
 	s.mu.Lock()
 	active := !s.voiceActive

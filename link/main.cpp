@@ -330,6 +330,7 @@ typedef struct message_spec {
     X(MSG_VR_AUDIO_INIT, 0x00050002, MSG_LOG_INFO, format_audio_init)                              \
     X(MSG_VR_AUDIO_DATA, 0x00050003, MSG_LOG_OFF, format_data_chunk)                               \
     X(MSG_VR_AUDIO_STOP, 0x00050004, MSG_LOG_INFO, NULL)                                           \
+    X(MSG_VR_MIC_DATA, 0x00058001, MSG_LOG_OFF, format_data_chunk)                                 \
     X(MSG_TOUCH_ACTION, 0x00068001, MSG_LOG_OFF, NULL)                                             \
     X(MSG_TOUCH_ACTION_DOWN, 0x00068002, MSG_LOG_OFF, NULL)                                        \
     X(MSG_TOUCH_ACTION_UP, 0x00068003, MSG_LOG_OFF, NULL)                                          \
@@ -1998,7 +1999,8 @@ static void handle_command(uint8_t channel, const uint8_t* payload, uint32_t len
                 return;
             }
             uint32_t timestamp = get_be32(body);
-            lib->sendVRRecordData((u8*)(body + 4), body_length - 4, timestamp);
+            int rc = lib->sendVRRecordData((u8*)(body + 4), body_length - 4, timestamp);
+            msg_send(MSG_VR_MIC_DATA, rc, data_chunk{body_length - 4});
             return;
         }
         log_line_warn("channel.unknown_tag ch=vr tag=0x%02X action=ignore", (unsigned)tag);

@@ -243,6 +243,13 @@ func (h *linkClient) sendHardKey(keycode uint32) error {
 	return h.send(chCtrl, cmdHardKey, be32(int32(keycode)))
 }
 
+// sendVRData forwards one recorded microphone packet to the phone over the voice channel.
+// The guide lets the timestamp be left out, and the phone feeds the payload into a byte
+// stream, so it carries no timing information of its own.
+func (h *linkClient) sendVRData(pcm []byte) error {
+	return h.send(chVR, cmdVRData, append(be32(0), pcm...))
+}
+
 func sleepContext(ctx context.Context, duration time.Duration) bool {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()

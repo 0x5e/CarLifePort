@@ -26,11 +26,12 @@ const (
 	wireFlagKeyframe byte = 1
 )
 
-// CarLife has a single video stream; audio is split into media and navigation channels so the front end can adjust each volume separately.
+// CarLife has a single video stream; audio is split into media, navigation and voice channels so the front end can adjust each volume separately.
 const (
 	videoStreamType  byte = 1
 	audioStreamMedia byte = 1
 	audioStreamTTS   byte = 2
+	audioStreamVR    byte = 3
 )
 
 // These names travel over the wire and the browser shows them directly as volume
@@ -38,6 +39,7 @@ const (
 const (
 	streamNameMedia = "Media"
 	streamNameTTS   = "Navigation"
+	streamNameVR    = "Voice"
 )
 
 func encodeVideoConfig(streamType byte, width, height int, avcC []byte) []byte {
