@@ -491,7 +491,9 @@ func (s *session) onAudioEvent(streamType byte, name string, event linkEvent) {
 		}
 		sampleRate := int(binary.BigEndian.Uint32(event.payload))
 		channelConfig := int(binary.BigEndian.Uint32(event.payload[4:]))
+		sampleFormat := int(binary.BigEndian.Uint32(event.payload[8:]))
 		channels := channelsFromConfig(channelConfig)
+		warnUnexpectedAudioFormat(streamType, name, sampleRate, channels, sampleFormat)
 		if sampleRate <= 0 {
 			sampleRate = 48000
 		}
@@ -568,6 +570,23 @@ func channelsFromConfig(config int) int {
 	default:
 		return 2
 	}
+}
+
+// The guide fixes the format of the two voice streams (table 8.2-1): navi tts and the voice
+// assistant's prompts are 16 kHz, mono, 16-bit little-endian PCM. The phone decides what it
+// sends, so a different format is only reported; the stream is still forwarded as it comes,
+// with the parameters this message names.
+func warnUnexpectedAudioFormat(streamType byte, name string, sampleRate, channels, bitsPerSample int) {
+	if streamType != audioStreamTTS && streamType != audioStreamVR {
+		return
+	}
+	const wantRate, wantChannels, wantBits = 16000, 1, 16
+	if sampleRate == wantRate && channels == wantChannels && bitsPerSample == wantBits {
+		return
+	}
+	warnf(moduleSession, "session.audio_format_mismatch stream=%s rate_hz=%d channels=%d bits=%d "+
+		"expected_rate_hz=%d expected_channels=%d expected_bits=%d",
+		name, sampleRate, channels, bitsPerSample, wantRate, wantChannels, wantBits)
 }
 
 /* ---------------------------------------------------------------------- voice */

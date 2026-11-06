@@ -400,6 +400,9 @@ Linux 的 `/etc/machine-id`），不提供配置项。
 就是浏览器所在设备的麦克风；没有 viewer 时无人采集，手机只拿到静音，日志记
 `session.voice_capture state=start viewers=0`。
 
+两路语音流按指南表 8.2-1 校验格式（16 kHz、单声道、16 bit、PCM）：`MSG_*_INIT` 报上来的采样率、
+声道数或位深不符时记一条 `session.audio_format_mismatch`，之后仍按报上来的参数转发。
+
 手机自己在识别开始时暂停 Media、结束时恢复（`MSG_MEDIA_PAUSE` / `MSG_MEDIA_RESUME_PLAY`），
 提示音与 Media 之间不做混音控制。
 
